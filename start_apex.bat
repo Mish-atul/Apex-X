@@ -11,12 +11,16 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr :3000') do taskkill /f /pid %
 timeout /t 2 /nobreak >nul
 
 :: Start Backend in a new command prompt window
-start "APEX-X Backend" cmd /k "set PYTHONPATH=%~dp0&& cd backend && .\venv\Scripts\uvicorn.exe app.main:app --host 0.0.0.0 --port 8080 --reload"
+start "APEX-X Backend" cmd /k "cd /d "%~dp0backend" && set PYTHONPATH=%~dp0backend && .\venv\Scripts\uvicorn.exe app.main:app --host 0.0.0.0 --port 8080 --reload"
 
 :: Start Frontend in a new command prompt window
-start "APEX-X Frontend" cmd /k "cd frontend && npm run dev"
+start "APEX-X Frontend" cmd /k "cd /d "%~dp0frontend" && npm run dev"
 
 echo Both services have been launched in separate windows!
+echo - Backend API:  http://localhost:8080 (Docs: http://localhost:8080/docs)
+echo - Frontend Web: http://localhost:3000
+echo.
 echo You can now observe the logs in those windows.
 echo Press any key to close this launcher...
 pause >nul
+
