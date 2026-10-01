@@ -107,13 +107,56 @@ def run_full_c2_intelligence(apk_path: str, case_dir: str, case_id: str) -> Dict
             "tags": detection.get("tags", []),
         }
 
-        # Risk score based on detection ratio and infrastructure
+        # Risk score based on detection ratio, infrastructure, and dynamic behavior
         infra = result["contacted_infrastructure"]
         risk = 0
         risk += min(int(detection_pct * 0.6), 60)  # Up to 60 from detection ratio
-        risk += min(len(infra.get("domains", [])) * 5, 15)  # Up to 15 from domains
-        risk += min(len(infra.get("ips", [])) * 5, 15)  # Up to 15 from IPs
+
+        # Count non-Google/non-noise IPs as suspicious
+        noise_ip_prefixes = ("172.217.", "142.250.", "172.253.", "74.125.", "192.178.", "34.98.", "34.64.", "34.96.", "216.58.")
+        all_ips = infra.get("ips", [])
+        suspicious_ips = [ip for ip in all_ips if not any(ip.startswith(p) for p in noise_ip_prefixes)]
+        
+        risk += min(len(suspicious_ips) * 8, 25)  # Up to 25 from suspicious IPs
+        risk += min(len(infra.get("domains", [])) * 5, 10)  # Up to 10 from domains
         risk += min(infra.get("dropped_files", 0) * 10, 10)  # Up to 10 from dropped files
+        
+        # Check for non-standard port connections (strong C2 indicator)
+        try:
+            from app.models.session import SessionLocal as _SL
+            from app.models.database import PhaseResult as _PR
+            _normalize = graph_builder._normalize_case_id
+            _cuuid = _normalize(case_dir)
+            if _cuuid:
+                _dbs = _SL()
+                try:
+                    _dpr = _dbs.query(_PR).filter(_PR.case_id == _cuuid, _PR.phase == "dynamic").first()
+                    if _dpr and _dpr.result:
+                        _dd = _dpr.result if isinstance(_dpr.result, dict) else json.loads(_dpr.result)
+                        for ev in _dd.get("events", []):
+                            if isinstance(ev, dict) and ev.get("category") == "network":
+                                desc = ev.get("description", "") + ev.get("api_call", "")
+                                # Check for non-443/80 ports
+                                import re
+                                port_match = re.search(r'port\s+(\d+)', desc)
+                                if port_match:
+                                    port = int(port_match.group(1))
+                                    if port not in (80, 443, 8080):
+                                        risk += 15  # Non-standard port = strong C2 indicator
+                                        if threat_category == "Under Investigation":
+                                            threat_category = "Suspicious"
+                                            result["attribution"]["threat_category"] = threat_category
+                                        break
+                finally:
+                    _dbs.close()
+        except Exception:
+            pass
+
+        # Boost confidence if we have dynamic evidence
+        if len(all_ips) > 3 and len(suspicious_ips) > 0:
+            if result["attribution"]["confidence"] == "low":
+                result["attribution"]["confidence"] = "medium"
+
         result["risk_score"] = min(risk, 100)
 
     except Exception as e:

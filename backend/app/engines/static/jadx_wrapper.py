@@ -21,8 +21,9 @@ def _find_jadx() -> Optional[str]:
     result = shutil.which("jadx")
     if result:
         return result
-    # Check local tools directory (backend/tools/jadx/bin/)
-    tools_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "tools")
+    # Check local tools directory (project_root/tools/jadx/bin/)
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    tools_dir = os.path.join(os.path.dirname(backend_dir), "tools")
     local_bat = os.path.join(tools_dir, "jadx", "bin", "jadx.bat")
     if os.path.isfile(local_bat):
         return local_bat

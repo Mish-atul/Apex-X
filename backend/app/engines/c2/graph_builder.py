@@ -83,7 +83,54 @@ def build_c2_graph(
         except Exception as e:
             logger.debug(f"Could not read dynamic report: {e}")
 
-    # ── Deep scan intelligence (enrichment) ──
+    # From pentest report (pentest_analysis/pentest_report.json)
+    pentest_path = os.path.join(case_dir, "pentest_analysis", "pentest_report.json")
+    if os.path.exists(pentest_path):
+        try:
+            with open(pentest_path, "r") as f:
+                pen = json.load(f)
+            # Extract from events with category "network"
+            for ev in pen.get("events", []):
+                if isinstance(ev, dict) and ev.get("category") == "network":
+                    desc = ev.get("description", "")
+                    api_call = ev.get("api_call", "")
+                    # Extract IP from description like "App connected to X.X.X.X (X.X.X.X) on port 443/TCP"
+                    _extract_network_iocs(desc, ips, domains)
+                    _extract_network_iocs(api_call, ips, domains)
+        except Exception as e:
+            logger.debug(f"Could not read pentest report: {e}")
+
+    # From DB dynamic phase results (fallback when data is only in DB)
+    try:
+        from app.models.session import SessionLocal
+        from app.models.database import PhaseResult
+        import re as _re
+        case_uuid = _normalize_case_id(case_dir)
+        if case_uuid:
+            _db = SessionLocal()
+            try:
+                dyn_phase = _db.query(PhaseResult).filter(
+                    PhaseResult.case_id == case_uuid,
+                    PhaseResult.phase == "dynamic"
+                ).first()
+                if dyn_phase and dyn_phase.result:
+                    dyn_data = dyn_phase.result if isinstance(dyn_phase.result, dict) else json.loads(dyn_phase.result)
+                    for ev in dyn_data.get("events", []):
+                        if isinstance(ev, dict) and ev.get("category") == "network":
+                            _extract_network_iocs(ev.get("description", ""), ips, domains)
+                            _extract_network_iocs(ev.get("api_call", ""), ips, domains)
+                    # Also check pentest_data.network_activity
+                    pd = dyn_data.get("pentest_data", {})
+                    for na in pd.get("network_activity", []):
+                        if isinstance(na, dict):
+                            if na.get("ip"):
+                                ips.add(na["ip"])
+                            if na.get("destination"):
+                                domains.add(na["destination"])
+            finally:
+                _db.close()
+    except Exception as e:
+        logger.debug(f"Could not read dynamic DB results: {e}")
     contacted_ips_data = []
     contacted_domains_data = []
     contacted_urls_data = []
@@ -305,3 +352,35 @@ def _find_apk_path(case_dir: str) -> str:
         if f.endswith(".apk"):
             return os.path.join(case_dir, f)
     return ""
+
+
+def _extract_network_iocs(text: str, ips: set, domains: set):
+    """Extract IPs and domain names from a description string."""
+    import re
+    # Match IPv4 addresses
+    ip_pattern = re.compile(r'\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b')
+    for match in ip_pattern.finditer(text):
+        ip = match.group(1)
+        # Validate IP octets
+        parts = ip.split('.')
+        if all(0 <= int(p) <= 255 for p in parts):
+            ips.add(ip)
+
+    # Match domain names (e.g., sn-in-f119.1e100.net, example.com)
+    domain_pattern = re.compile(r'\b([a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,})\b')
+    for match in domain_pattern.finditer(text):
+        domain = match.group(1)
+        # Skip if it looks like an IP or version string
+        if not re.match(r'^\d+\.\d+\.\d+\.\d+$', domain) and len(domain) > 4:
+            domains.add(domain)
+
+
+def _normalize_case_id(case_dir: str):
+    """Extract a UUID object from the case directory path."""
+    import uuid
+    basename = os.path.basename(case_dir.rstrip('/\\'))
+    try:
+        return uuid.UUID(basename)
+    except (ValueError, AttributeError):
+        return None
+

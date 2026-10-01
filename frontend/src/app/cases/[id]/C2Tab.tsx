@@ -278,6 +278,7 @@ export default function C2Tab({ caseData, analysisResults, isMockCase }: C2TabPr
                     <thead>
                       <tr className="border-b border-border-subtle text-left">
                         <th className="py-2 px-2 font-mono text-primary/50 font-normal">IP Address</th>
+                        <th className="py-2 px-2 font-mono text-primary/50 font-normal">Source APK</th>
                         <th className="py-2 px-2 font-mono text-primary/50 font-normal">Location</th>
                         <th className="py-2 px-2 font-mono text-primary/50 font-normal">ISP / Org</th>
                         <th className="py-2 px-2 font-mono text-primary/50 font-normal">Classification</th>
@@ -288,9 +289,16 @@ export default function C2Tab({ caseData, analysisResults, isMockCase }: C2TabPr
                       {ipNodes.map((node: any, i: number) => {
                         const meta = node.metadata || {};
                         const location = [meta.city, meta.country].filter(Boolean).join(", ");
+                        // Determine if this IP belongs to parent or child APK
+                        const apkType = meta.apk_type || meta.source_apk_type || "unknown";
+                        const sourceLabel = apkType === "child" ? "📦 Child APK" : apkType === "system" ? "⚙️ System" : "📱 Parent APK";
+                        const sourceStyle = apkType === "child" ? "bg-purple-500/10 text-purple-400 border-purple-500/20" : apkType === "system" ? "bg-gray-500/10 text-gray-400 border-gray-500/20" : "bg-blue-500/10 text-blue-400 border-blue-500/20";
                         return (
                           <tr key={i} className="border-b border-border-subtle/30 hover:bg-primary/5 transition-colors">
                             <td className="py-2 px-2 font-mono text-primary/80">{node.label}</td>
+                            <td className="py-2 px-2">
+                              <span className={`px-2 py-0.5 text-xs font-mono rounded border ${sourceStyle}`}>{sourceLabel}</span>
+                            </td>
                             <td className="py-2 px-2 text-primary/70">
                               {location || <span className="text-primary/30 italic">Unknown</span>}
                             </td>

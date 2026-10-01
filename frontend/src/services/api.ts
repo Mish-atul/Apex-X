@@ -390,3 +390,33 @@ export async function stopPentestSession(caseId: string): Promise<any> {
   return response.json();
 }
 
+export async function cleanPentestDevice(caseId: string, deviceSerial?: string): Promise<any> {
+  const token = getToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const response = await fetch(`${API_BASE_URL}/cases/${caseId}/pentest/clean`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(deviceSerial ? { device_serial: deviceSerial } : {}),
+  });
+  if (!response.ok) throw new Error("Failed to clean device");
+  return response.json();
+}
+
+export async function uninstallPackageFromDevice(caseId: string, packageName: string, deviceSerial?: string): Promise<any> {
+  const token = getToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const response = await fetch(`${API_BASE_URL}/cases/${caseId}/pentest/uninstall-package`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ package_name: packageName, ...(deviceSerial ? { device_serial: deviceSerial } : {}) }),
+  });
+  if (!response.ok) throw new Error(`Failed to uninstall package ${packageName}`);
+  return response.json();
+}
+
+
+

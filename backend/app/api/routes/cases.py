@@ -446,3 +446,75 @@ def stop_pentest_session(case_id: UUID, db: Session = Depends(get_db)):
 
     return {"status": "stopping", "message": "Monitoring stopped. Report is being generated."}
 
+
+@router.post("/{case_id}/pentest/clean")
+def clean_pentest_device(case_id: UUID, body: dict = None, db: Session = Depends(get_db)):
+    """
+    Manually clean up / uninstall all test APKs (target APK and any child/dropper APKs)
+    from the connected device.
+    Body can optionally contain { "device_serial": "XYZ" }.
+    """
+    import os
+    case = db.query(Case).filter(Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    device_serial = (body or {}).get("device_serial")
+    if not device_serial:
+        # Fall back to first available USB device
+        from app.engines.dynamic.device_monitor import scan_usb_devices
+        devices = scan_usb_devices()
+        ready = [d for d in devices if d.get("status") == "ready"]
+        if ready:
+            device_serial = ready[0]["serial"]
+        else:
+            raise HTTPException(status_code=400, detail="No connected Android device found to clean")
+
+    DATA_DIR = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        "data", "cases"
+    )
+    case_dir = os.path.join(DATA_DIR, str(case_id))
+    apk_path = os.path.join(case_dir, case.apk_name)
+
+    from app.engines.dynamic import vm_orchestrator
+    target_package = ""
+    if os.path.exists(apk_path):
+        target_package = vm_orchestrator.get_package_name(apk_path) or ""
+
+    from app.engines.dynamic.device_monitor import cleanup_device_for_case
+    result = cleanup_device_for_case(case_dir, device_serial, target_package)
+    return result
+
+
+@router.post("/{case_id}/pentest/uninstall-package")
+def uninstall_package(case_id: UUID, body: dict, db: Session = Depends(get_db)):
+    """
+    Uninstall a specific package (parent, child dropper, or any detected application)
+    from the connected device.
+    Body must contain { "package_name": "..." } and optionally { "device_serial": "..." }.
+    """
+    case = db.query(Case).filter(Case.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    package_name = body.get("package_name")
+    if not package_name:
+        raise HTTPException(status_code=400, detail="package_name is required")
+
+    device_serial = body.get("device_serial")
+    if not device_serial:
+        from app.engines.dynamic.device_monitor import scan_usb_devices
+        devices = scan_usb_devices()
+        ready = [d for d in devices if d.get("status") == "ready"]
+        if ready:
+            device_serial = ready[0]["serial"]
+        else:
+            raise HTTPException(status_code=400, detail="No connected Android device found")
+
+    from app.engines.dynamic.device_monitor import uninstall_single_package
+    result = uninstall_single_package(device_serial, package_name)
+    return result
+
+
+

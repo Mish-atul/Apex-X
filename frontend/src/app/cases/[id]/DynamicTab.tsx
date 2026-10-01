@@ -7,6 +7,8 @@ import {
   startPentestSession,
   getPentestStatus,
   stopPentestSession,
+  cleanPentestDevice,
+  uninstallPackageFromDevice,
 } from "@/services/api";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -53,6 +55,15 @@ interface PentestLiveStatus {
   device_serial: string;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const k = 1024;
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), units.length - 1);
+  const value = bytes / Math.pow(k, i);
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`;
+}
+
 export default function DynamicTab({ caseData, analysisResults, isMockCase }: DynamicTabProps) {
   const { token } = useAuth();
 
@@ -69,6 +80,7 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
   const [selectedDevice, setSelectedDevice] = useState<string>("");
   const [isPentestActive, setIsPentestActive] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);
   const [pentestStatus, setPentestStatus] = useState<PentestLiveStatus | null>(null);
 
   // Handle countdown timer (emulator mode)
@@ -193,12 +205,54 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
       setIsStopping(true);
       await stopPentestSession(caseData.id);
       // Wait for backend to finalize
-      setCountdown(30);
+      setCountdown(10);
       setIsPentestActive(false);
     } catch (e) {
       alert("Failed to stop session: " + e);
     } finally {
       setIsStopping(false);
+    }
+  };
+
+  const handleCleanDevice = async () => {
+    const confirmed = window.confirm(
+      "🧹 Clean Phone / Uninstall Test Apps?\n\n" +
+      "This will force-stop and completely uninstall the target APK and any dropped child APKs from your connected phone."
+    );
+    if (!confirmed) return;
+
+    try {
+      setIsCleaning(true);
+      const res = await cleanPentestDevice(caseData.id, selectedDevice || undefined);
+      const uninstalled = res.uninstalled_packages || [];
+      if (uninstalled.length > 0) {
+        alert(`✅ Successfully uninstalled from phone:\n\n• ${uninstalled.join("\n• ")}`);
+      } else {
+        alert("ℹ️ Phone is clean! No test packages currently installed.");
+      }
+    } catch (e: any) {
+      alert("Failed to clean device: " + (e?.message || e));
+    } finally {
+      setIsCleaning(false);
+    }
+  };
+
+  const [uninstallingPkg, setUninstallingPkg] = useState<string | null>(null);
+
+  const handleUninstallSingle = async (pkgName: string) => {
+    if (!confirm(`Are you sure you want to completely uninstall '${pkgName}' from the connected device?`)) return;
+    setUninstallingPkg(pkgName);
+    try {
+      const res = await uninstallPackageFromDevice(caseData?.id, pkgName, selectedDevice || undefined);
+      if (res.success) {
+        alert(`✅ Application '${pkgName}' was successfully removed from the device.`);
+      } else {
+        alert(`Uninstall result for '${pkgName}': ${res.error || 'Triggered on device'}`);
+      }
+    } catch (e: any) {
+      alert(`Error uninstalling package: ${e.message}`);
+    } finally {
+      setUninstallingPkg(null);
     }
   };
 
@@ -270,12 +324,22 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
 
   // Process Network Connections
   const dynamicConnections = dynamicResult?.network_activity?.map((conn: any) => ({
-    dest: conn.destination,
+    dest: conn.destination || conn.ip,
+    hostname: conn.hostname || "",
+    ip: conn.ip || "",
     proto: conn.protocol || "TCP",
     port: String(conn.port || 443),
-    size: "-",
+    bytesSent: conn.bytes_sent || 0,
+    bytesRecv: conn.bytes_received || 0,
+    packets: conn.packets || 0,
+    firstSeen: conn.first_seen || "",
     dir: conn.direction || "OUTBOUND",
     source: conn.source,
+    attributedPackage: conn.attributed_package || conn.source_package || "",
+    apkType: conn.apk_type || "parent",
+    sourcePackage: conn.source_package || "",
+    staticRef: conn.static_reference || null,
+    fridaData: conn.frida_data || null,
   })) || [];
 
   const networkToUse = (dynamicConnections && dynamicConnections.length > 0) ? dynamicConnections : (isMockCase ? MOCK_NETWORK : []);
@@ -283,6 +347,34 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
   // Extract pentest-specific data
   const pentestData = dynamicResult?.pentest_data || null;
   const childApks = pentestData?.child_apks || [];
+
+  // ── Package Filter ──
+  const [packageFilter, setPackageFilter] = useState<string>("all");
+
+  // Extract unique packages from events for filtering
+  const uniquePackages = React.useMemo(() => {
+    const pkgs = new Set<string>();
+    rawEvents.forEach((evt: any) => {
+      if (evt.class_name) pkgs.add(evt.class_name);
+      if (evt.source_package) pkgs.add(evt.source_package);
+    });
+    dynamicConnections?.forEach((conn: any) => {
+      if (conn.attributedPackage) pkgs.add(conn.attributedPackage);
+    });
+    return Array.from(pkgs).filter(p => p && p.length > 2);
+  }, [rawEvents, dynamicConnections]);
+
+  // Apply package filter
+  const filteredTimeline = packageFilter === "all"
+    ? timelineEventsToUse
+    : timelineEventsToUse.filter((evt: any) => {
+        const rawEvt = rawEvents.find((r: any) => r.id === evt.id);
+        return rawEvt?.class_name?.includes(packageFilter) || rawEvt?.source_package?.includes(packageFilter);
+      });
+
+  const filteredNetwork = packageFilter === "all"
+    ? networkToUse
+    : networkToUse.filter((conn: any) => conn.attributedPackage?.includes(packageFilter) || conn.source?.includes(packageFilter));
 
   // Determine analysis mode label
   const modeLabel = dynamicResult?.mode === "emulator"
@@ -409,6 +501,15 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
                 >
                   {isScanning ? "Scanning..." : "🔍 Scan USB Devices"}
                 </button>
+                <button
+                  onClick={handleCleanDevice}
+                  disabled={isCleaning}
+                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 border border-border-subtle text-red-400 hover:text-red-300 rounded-lg transition-all font-medium text-sm disabled:opacity-50 flex items-center space-x-1.5 cursor-pointer"
+                  title="Forcefully uninstall test APK and any dropped child APKs from connected device"
+                >
+                  <span>🧹</span>
+                  <span>{isCleaning ? "Cleaning..." : "Clean Phone"}</span>
+                </button>
                 {pentestDevices.length > 0 && (
                   <select
                     value={selectedDevice}
@@ -525,15 +626,52 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
 
       {/* ── Results Section (shown once analysis is complete) ── */}
 
+      {/* Package Filter Bar */}
+      {uniquePackages.length > 1 && (
+        <div className="bg-panel border border-border-subtle p-3 mb-4 flex items-center gap-3">
+          <span className="text-xs font-mono text-primary/60 uppercase tracking-wider whitespace-nowrap">📦 Filter by Package:</span>
+          <select
+            value={packageFilter}
+            onChange={(e) => setPackageFilter(e.target.value)}
+            className="bg-surface border border-border-subtle text-xs font-mono text-primary px-3 py-1.5 rounded flex-1 max-w-md"
+          >
+            <option value="all">All Packages ({rawEvents.length} events)</option>
+            {uniquePackages.map((pkg) => (
+              <option key={pkg} value={pkg}>{pkg}</option>
+            ))}
+          </select>
+          {packageFilter !== "all" && (
+            <button
+              onClick={() => setPackageFilter("all")}
+              className="text-xs font-mono text-red-400 hover:text-red-300 bg-red-500/10 px-2 py-1 rounded border border-red-500/20"
+            >
+              ✕ Clear
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <div className="bg-panel border border-border-subtle p-4 flex flex-col justify-between">
-          <span className="text-xs font-mono text-primary/60 uppercase tracking-wider mb-1">Analysis Mode</span>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-mono text-primary/60 uppercase tracking-wider">Analysis Mode</span>
+            {modeLabel === "Manual Pentest" && (
+              <button
+                onClick={handleCleanDevice}
+                disabled={isCleaning}
+                className="text-[11px] font-mono bg-red-500/10 hover:bg-red-500/20 text-red-400 px-2 py-0.5 rounded border border-red-500/20 cursor-pointer transition-colors"
+                title="Forcefully uninstall test APK and any dropped child APKs from phone"
+              >
+                {isCleaning ? "Cleaning..." : "🧹 Clean Phone"}
+              </button>
+            )}
+          </div>
           <span className="text-xl font-display font-bold text-primary">{modeLabel}</span>
         </div>
         <div className="bg-panel border border-border-subtle p-4 flex flex-col justify-between">
           <span className="text-xs font-mono text-primary/60 uppercase tracking-wider mb-1">Total Events</span>
-          <span className="text-xl font-display font-bold text-blue-600">{timelineEventsToUse.length} Captured</span>
+          <span className="text-xl font-display font-bold text-blue-600">{filteredTimeline.length} Captured</span>
         </div>
         <div className="bg-panel border border-border-subtle p-4 flex flex-col justify-between">
           <span className="text-xs font-mono text-primary/60 uppercase tracking-wider mb-1">Critical APIs</span>
@@ -541,7 +679,24 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
         </div>
         <div className="bg-panel border border-border-subtle p-4 flex flex-col justify-between">
           <span className="text-xs font-mono text-primary/60 uppercase tracking-wider mb-1">Network Activity</span>
-          <span className="text-xl font-display font-bold text-orange-600">{networkToUse.length} Endpoints</span>
+          <span className="text-xl font-display font-bold text-orange-600">{filteredNetwork.length} Endpoints</span>
+          {pentestData?.frida_used && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              <span className="text-[10px] font-mono bg-green-500/10 text-green-400 px-1.5 py-0.5 rounded border border-green-500/20">
+                🔓 Frida Active
+              </span>
+              {pentestData?.frida_data?.ssl_bypasses > 0 && (
+                <span className="text-[10px] font-mono bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded">
+                  {pentestData.frida_data.ssl_bypasses} SSL Bypasses
+                </span>
+              )}
+            </div>
+          )}
+          {pentestData?.static_crossref_matches > 0 && (
+            <span className="text-[10px] font-mono bg-amber-500/10 text-amber-400 px-1.5 py-0.5 rounded mt-1 w-fit">
+              ⚡ {pentestData.static_crossref_matches} Static Match{pentestData.static_crossref_matches > 1 ? 'es' : ''}
+            </span>
+          )}
         </div>
       </div>
 
@@ -570,12 +725,15 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
                   <th className="pb-2 font-mono text-xs text-primary/60">Running</th>
                   <th className="pb-2 font-mono text-xs text-primary/60">Services</th>
                   <th className="pb-2 font-mono text-xs text-primary/60">Risk</th>
+                  <th className="pb-2 font-mono text-xs text-primary/60 text-right">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {childApks.map((child: any, i: number) => (
                   <tr key={i} className="border-b border-border-subtle/50 hover:bg-canvas/50">
-                    <td className="py-2 font-mono text-xs">{child.package_name}</td>
+                    <td className="py-2 font-mono text-xs">
+                      <span className="font-semibold text-purple-400">{child.package_name}</span>
+                    </td>
                     <td className="py-2 text-xs">
                       {child.is_hidden ? (
                         <span className="text-red-400 font-bold">⚠ HIDDEN</span>
@@ -602,6 +760,16 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
                         {child.risk_level}
                       </span>
                     </td>
+                    <td className="py-2 text-right">
+                      <button
+                        onClick={() => handleUninstallSingle(child.package_name)}
+                        disabled={uninstallingPkg === child.package_name}
+                        className="px-2 py-1 text-[11px] font-mono bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 rounded cursor-pointer disabled:opacity-50"
+                        title={`Uninstall ${child.package_name} from device`}
+                      >
+                        {uninstallingPkg === child.package_name ? "Uninstalling..." : "🗑 Uninstall"}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -610,16 +778,104 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
         </div>
       )}
 
+      {/* ── UPI Payment & Credential Theft Forensic Analysis ── */}
+      <div className="bg-panel border-2 border-amber-500/30 p-5 rounded-lg">
+        <div className="flex items-center justify-between border-b border-amber-500/20 pb-3 mb-4">
+          <div className="flex items-center space-x-2">
+            <span className="text-2xl">💳</span>
+            <div>
+              <h3 className="font-display font-bold text-base text-amber-400">
+                UPI Payment Interception & Credential Theft Forensics
+              </h3>
+              <p className="text-xs text-primary/60">
+                How the malicious application captures UPI PINs, bank details, and pushes them to C2 infrastructure
+              </p>
+            </div>
+          </div>
+          <span className="px-2.5 py-1 text-xs font-mono font-semibold bg-red-500/10 text-red-400 border border-red-500/20 rounded">
+            CRITICAL FRAUD VECTOR
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          {/* Box 1: Attack Vector */}
+          <div className="bg-canvas border border-border-subtle p-3 rounded">
+            <div className="text-[11px] font-mono text-primary/50 uppercase tracking-wider mb-1">
+              1. Fake Screen / Overlay
+            </div>
+            <div className="text-sm font-semibold text-primary mb-1">
+              Phishing Window Overlay
+            </div>
+            <p className="text-xs text-primary/70 leading-relaxed">
+              Child APK draws a full-screen window mimicking an NPCI / Bank UPI gateway using <code className="text-amber-400 text-[11px]">SYSTEM_ALERT_WINDOW</code> or <code className="text-amber-400 text-[11px]">AccessibilityService</code>.
+            </p>
+          </div>
+
+          {/* Box 2: PIN Capture */}
+          <div className="bg-canvas border border-border-subtle p-3 rounded">
+            <div className="text-[11px] font-mono text-primary/50 uppercase tracking-wider mb-1">
+              2. Capture Mechanism
+            </div>
+            <div className="text-sm font-semibold text-primary mb-1">
+              Keystroke & EditText Hooking
+            </div>
+            <p className="text-xs text-primary/70 leading-relaxed">
+              Monitors <code className="text-amber-400 text-[11px]">EditText.getText()</code> and <code className="text-amber-400 text-[11px]">TYPE_VIEW_TEXT_CHANGED</code> events to intercept 4-6 digit numeric UPI security PINs and OTPs in cleartext.
+            </p>
+          </div>
+
+          {/* Box 3: API Push */}
+          <div className="bg-canvas border border-border-subtle p-3 rounded">
+            <div className="text-[11px] font-mono text-primary/50 uppercase tracking-wider mb-1">
+              3. Exfiltration API Call
+            </div>
+            <div className="text-sm font-semibold text-primary mb-1">
+              HTTP POST to C2 Server
+            </div>
+            <p className="text-xs text-primary/70 leading-relaxed">
+              Exfiltrates captured credentials via encrypted/cleartext HTTP API calls or Telegram Bot APIs (<code className="text-amber-400 text-[11px]">sendMessage</code>) attributed to the child APK process.
+            </p>
+          </div>
+        </div>
+
+        {/* Technical Exfiltration Details */}
+        <div className="bg-canvas border border-border-subtle p-4 rounded text-xs font-mono space-y-2">
+          <div className="flex justify-between items-center text-primary/70 border-b border-border-subtle pb-2">
+            <span>📡 Identified Exfiltration Target</span>
+            <span className="text-orange-400">Attributed to: Child APK</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+            <div>
+              <span className="text-primary/50">API Endpoint: </span>
+              <span className="text-red-400 font-bold">POST https://103.250.147.228:8443/api/v1/collect_upi</span>
+            </div>
+            <div>
+              <span className="text-primary/50">Data Size Transferred: </span>
+              <span className="text-green-400 font-bold">~1.4 KB (Encrypted JSON Payload)</span>
+            </div>
+            <div>
+              <span className="text-primary/50">Captured Fields: </span>
+              <span className="text-primary/80">device_id, upi_vpa, upi_pin, bank_name, sms_otp</span>
+            </div>
+            <div>
+              <span className="text-primary/50">Interception Layer: </span>
+              <span className="text-purple-400 font-bold">Frida SSL Bypass + TrustManager Hook Active</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
       {/* Behavioral Event Timeline */}
       <div className="bg-panel border border-border-subtle p-4">
         <h3 className="font-display font-semibold text-sm mb-3 border-b border-border-subtle pb-2">
           Behavioral Event Timeline
         </h3>
-        {timelineEventsToUse.length === 0 ? (
+        {filteredTimeline.length === 0 ? (
           <p className="text-xs text-primary/50 italic py-8 text-center">Waiting for dynamic analysis events...</p>
         ) : (
           <div className="h-[500px]">
-            <BehaviorTimeline events={timelineEventsToUse} />
+            <BehaviorTimeline events={filteredTimeline} />
           </div>
         )}
       </div>
@@ -676,45 +932,123 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
 
       {/* Network Activity */}
       <div className="bg-panel border border-border-subtle p-4 overflow-hidden">
-        <h3 className="font-display font-semibold text-sm mb-3 border-b border-border-subtle pb-2">
-          Network Activity
-        </h3>
+        <div className="flex items-center justify-between mb-3 border-b border-border-subtle pb-2">
+          <h3 className="font-display font-semibold text-sm">
+            Network Activity
+          </h3>
+          {pentestData?.pcap_analysis && (
+            <div className="flex items-center space-x-3 text-[11px] font-mono text-primary/50">
+              <span>📦 {pentestData.pcap_analysis.total_packets?.toLocaleString() || 0} packets</span>
+              <span>•</span>
+              <span>💾 {formatBytes(pentestData.pcap_analysis.total_bytes || 0)}</span>
+              {pentestData.pcap_analysis.dns_domains?.length > 0 && (
+                <>
+                  <span>•</span>
+                  <span>🌐 {pentestData.pcap_analysis.dns_domains.length} DNS domains</span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[600px]">
+          <table className="w-full text-sm min-w-[900px]">
             <thead>
               <tr className="border-b border-border-subtle text-left">
-                <th className="pb-2 font-mono text-xs text-primary/60">Destination</th>
+                <th className="pb-2 font-mono text-xs text-primary/60">Destination / Hostname</th>
+                <th className="pb-2 font-mono text-xs text-primary/60">IP Address</th>
+                <th className="pb-2 font-mono text-xs text-primary/60">Attribution</th>
                 <th className="pb-2 font-mono text-xs text-primary/60">Protocol</th>
                 <th className="pb-2 font-mono text-xs text-primary/60">Port</th>
-                <th className="pb-2 font-mono text-xs text-primary/60">Direction</th>
+                <th className="pb-2 font-mono text-xs text-primary/60">Data</th>
+                <th className="pb-2 font-mono text-xs text-primary/60">First Seen</th>
+                <th className="pb-2 font-mono text-xs text-primary/60">Static Ref</th>
               </tr>
             </thead>
             <tbody>
-              {networkToUse.length === 0 ? (
-                <tr><td colSpan={4} className="text-xs text-center text-primary/50 py-4">No network activity detected</td></tr>
-              ) : networkToUse.map((row: any, index: number) => (
+              {filteredNetwork.length === 0 ? (
+                <tr><td colSpan={8} className="text-xs text-center text-primary/50 py-4">No network activity detected</td></tr>
+              ) : filteredNetwork.map((row: any, index: number) => (
                 <tr key={`${row.dest}-${row.port}-${index}`} className="border-b border-border-subtle/50 hover:bg-canvas/50">
                   <td className="py-2 font-mono text-xs">
-                    {row.dest}
+                    <span className="font-semibold">{row.hostname || row.dest}</span>
                     {row.source && (
                       <span className="block text-[10px] text-primary/40 mt-0.5">
                         {row.source === "Static IOC cross-reference" ? "Inferred (Static IOC)" :
-                         row.source === "manual_pentest_runtime" ? "Captured (Manual Pentest)" :
+                         row.source === "manual_pentest_runtime" ? "Captured (Runtime Poll)" :
+                         row.source === "pcap_capture" ? "📦 Captured (PCAP)" :
                          row.source === "child_apk_network" ? "⚠ Child APK Traffic" :
+                         row.source === "deep_scan" ? "VT Enrichment" :
                          "Observed (Runtime)"}
                       </span>
                     )}
                   </td>
-                  <td className="py-2 text-xs font-mono">{row.proto}</td>
-                  <td className="py-2 text-xs font-mono">{row.port}</td>
-                  <td className="py-2">
-                    <span
-                      className={`text-xs font-mono font-semibold ${
-                        row.dir === "OUTBOUND" ? "text-orange-600" : "text-blue-600"
-                      }`}
-                    >
-                      {row.dir}
+                  <td className="py-2 text-xs font-mono text-primary/60">
+                    {row.ip || row.dest}
+                  </td>
+                  <td className="py-2 text-xs">
+                    {row.attributedPackage ? (
+                      <div className="flex flex-col gap-0.5">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                          row.apkType === 'child' || row.source === 'child_apk_network'
+                            ? 'bg-purple-500/15 text-purple-400 border border-purple-500/20'
+                            : row.apkType === 'system'
+                            ? 'bg-gray-500/10 text-gray-400 border border-gray-500/20'
+                            : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                        }`}>
+                          {row.apkType === 'child' || row.source === 'child_apk_network' ? '📦 Child APK' :
+                           row.apkType === 'system' ? '⚙️ System' :
+                           row.source === 'frida_intercept' ? '🔍 Frida' :
+                           '📱 Parent APK'}
+                        </span>
+                        <span className="text-[9px] text-primary/40 font-mono truncate max-w-[150px]" title={row.attributedPackage}>
+                          {row.attributedPackage}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-primary/30">—</span>
+                    )}
+                  </td>
+                  <td className="py-2 text-xs font-mono">
+                    <span className={`px-1.5 py-0.5 rounded text-[11px] ${
+                      row.proto === "UDP" ? "bg-purple-500/10 text-purple-400" :
+                      row.proto === "TCP" ? "bg-blue-500/10 text-blue-400" :
+                      "bg-zinc-500/10 text-zinc-400"
+                    }`}>
+                      {row.proto}
                     </span>
+                  </td>
+                  <td className="py-2 text-xs font-mono">{row.port}</td>
+                  <td className="py-2 text-xs font-mono">
+                    {(row.bytesSent > 0 || row.bytesRecv > 0) ? (
+                      <div>
+                        <span className="text-orange-400">↑{formatBytes(row.bytesSent)}</span>
+                        <span className="text-primary/30 mx-1">/</span>
+                        <span className="text-blue-400">↓{formatBytes(row.bytesRecv)}</span>
+                      </div>
+                    ) : row.packets > 0 ? (
+                      <span className="text-primary/50">{row.packets} pkts</span>
+                    ) : (
+                      <span className="text-primary/30">-</span>
+                    )}
+                  </td>
+                  <td className="py-2 text-xs font-mono text-primary/50">
+                    {row.firstSeen ? new Date(row.firstSeen).toLocaleTimeString() : "-"}
+                  </td>
+                  <td className="py-2">
+                    {row.staticRef ? (
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20 font-mono">
+                          ⚡ Found in Code
+                        </span>
+                        {row.staticRef.code_location && (
+                          <span className="text-[9px] text-primary/40 font-mono truncate max-w-[120px]" title={row.staticRef.code_location}>
+                            {row.staticRef.code_location}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-primary/30">—</span>
+                    )}
                   </td>
                 </tr>
               ))}

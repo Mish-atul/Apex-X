@@ -76,19 +76,26 @@ export default function StaticTab({ caseData, analysisResults, isMockCase }: Sta
     iocsToUse = REAL_IOCS.filter((i: any) => i.case_id === caseData?.id);
   } else if (staticResult?.steps?.iocs?.data) {
     const iocData = staticResult.steps.iocs.data;
+    const codeRefs = iocData.code_references || {};
     const allIocs: any[] = [];
     let iocId = 1;
     for (const url of iocData.urls || []) {
-      allIocs.push({ id: iocId++, type: "url", value: url, context: "Java String Constant", confidence: 95 });
+      allIocs.push({ id: iocId++, type: "url", value: url, context: "Java String Constant", confidence: 95, code_references: codeRefs[url] || [] });
     }
     for (const ip of iocData.ips || []) {
-      allIocs.push({ id: iocId++, type: "ip", value: ip, context: "Decompiled Source", confidence: 85 });
+      allIocs.push({ id: iocId++, type: "ip", value: ip, context: "Decompiled Source", confidence: 85, code_references: codeRefs[ip] || [] });
     }
     for (const domain of iocData.domains || []) {
-      allIocs.push({ id: iocId++, type: "domain", value: domain, context: "Decompiled Source", confidence: 75 });
+      allIocs.push({ id: iocId++, type: "domain", value: domain, context: "Decompiled Source", confidence: 75, code_references: codeRefs[domain] || [] });
     }
     for (const email of iocData.emails || []) {
-      allIocs.push({ id: iocId++, type: "email", value: email, context: "Manifest / Source", confidence: 60 });
+      allIocs.push({ id: iocId++, type: "email", value: email, context: "Manifest / Source", confidence: 60, code_references: codeRefs[email] || [] });
+    }
+    for (const upi of iocData.upi_ids || []) {
+      allIocs.push({ id: iocId++, type: "upi", value: upi, context: "Decompiled Source", confidence: 90, code_references: codeRefs[upi] || [] });
+    }
+    for (const key of iocData.api_keys || []) {
+      allIocs.push({ id: iocId++, type: "api_key", value: key, context: "Decompiled Source", confidence: 95, code_references: codeRefs[key] || [] });
     }
     iocsToUse = allIocs;
   }

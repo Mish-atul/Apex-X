@@ -176,6 +176,7 @@ export default function IOCTable({ iocs }: IOCTableProps) {
                 Value<SortArrow field="value" currentSortField={sortField} sortAsc={sortAsc} />
               </th>
               <th className="pb-2 font-mono text-xs text-primary/60 font-medium">Context</th>
+              <th className="pb-2 font-mono text-xs text-primary/60 font-medium">Code Location</th>
               <th
                 className="pb-2 font-mono text-xs text-primary/60 font-medium cursor-pointer hover:text-primary text-right"
                 onClick={() => handleSort("confidence")}
@@ -191,46 +192,76 @@ export default function IOCTable({ iocs }: IOCTableProps) {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((ioc) => (
-              <tr key={ioc.id} className="border-b border-border-subtle/50 hover:bg-canvas/50 transition-colors">
-                <td className="py-2 pr-3">
-                  <span className={`text-xs font-mono font-semibold px-2 py-0.5 ${typeColors[ioc.type] || ""}`}>
-                    {ioc.type.toUpperCase()}
-                  </span>
-                </td>
-                <td className="py-2 pr-3 font-mono text-xs break-all max-w-[300px]">
-                  {ioc.value}
-                  {(ioc.type === "upi" || ioc.type === "bank_account") && (
-                    <button
-                      onClick={() => {
-                        const text = `To: Nodal Officer\nRequest to freeze ${ioc.type === 'upi' ? 'UPI ID' : 'Bank Account'}:\n${ioc.value}\nContext: ${ioc.context}\nCase relates to cyber fraud.`;
-                        navigator.clipboard.writeText(text);
-                        alert("Freeze request block copied to clipboard");
-                      }}
-                      className="ml-2 px-1.5 py-0.5 text-[10px] bg-primary/10 hover:bg-primary/20 rounded border border-primary/20 cursor-pointer"
-                      title="Copy freeze-request block"
+            {filtered.map((ioc) => {
+              const refs = ioc.code_references || [];
+              const primaryRef = refs[0];
+              return (
+                <tr key={ioc.id} className="border-b border-border-subtle/50 hover:bg-canvas/50 transition-colors">
+                  <td className="py-2 pr-3">
+                    <span className={`text-xs font-mono font-semibold px-2 py-0.5 ${typeColors[ioc.type] || ""}`}>
+                      {ioc.type.toUpperCase()}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 font-mono text-xs break-all max-w-[300px]">
+                    {ioc.value}
+                    {(ioc.type === "upi" || ioc.type === "bank_account") && (
+                      <button
+                        onClick={() => {
+                          const text = `To: Nodal Officer\nRequest to freeze ${ioc.type === 'upi' ? 'UPI ID' : 'Bank Account'}:\n${ioc.value}\nContext: ${ioc.context}\nCase relates to cyber fraud.`;
+                          navigator.clipboard.writeText(text);
+                          alert("Freeze request block copied to clipboard");
+                        }}
+                        className="ml-2 px-1.5 py-0.5 text-[10px] bg-primary/10 hover:bg-primary/20 rounded border border-primary/20 cursor-pointer"
+                        title="Copy freeze-request block"
+                      >
+                        Copy Freeze Block
+                      </button>
+                    )}
+                  </td>
+                  <td className="py-2 pr-3 text-xs text-primary/70 max-w-[200px]">
+                    {ioc.type === 'url' ? 'Java String Constant' : (ioc.type === 'domain' || ioc.type === 'ip') ? 'Decompiled Source' : ioc.context}
+                  </td>
+                  <td className="py-2 pr-3 text-xs font-mono">
+                    {primaryRef ? (
+                      <div className="flex flex-col gap-0.5">
+                        <span 
+                          className="inline-flex items-center gap-1 text-[11px] font-mono text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 max-w-[220px] truncate"
+                          title={`${primaryRef.file}:${primaryRef.line}${primaryRef.context ? `\nCode: ${primaryRef.context}` : ''}`}
+                        >
+                          <span>⚡</span>
+                          <span className="truncate">{primaryRef.file.split('/').pop()}</span>
+                          <span className="text-amber-400 font-bold">:{primaryRef.line}</span>
+                        </span>
+                        {primaryRef.context && (
+                          <span className="text-[10px] text-primary/50 font-mono italic truncate max-w-[200px]" title={primaryRef.context}>
+                            {primaryRef.context}
+                          </span>
+                        )}
+                        {refs.length > 1 && (
+                          <span className="text-[9px] text-primary/40 font-mono">
+                            +{refs.length - 1} more locations
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-primary/30 text-xs">—</span>
+                    )}
+                  </td>
+                  <td className="py-2 pr-3 text-right">
+                    <span
+                      className={`text-xs font-mono font-semibold ${
+                        ioc.confidence >= 80 ? "text-red-600" : ioc.confidence >= 60 ? "text-orange-600" : "text-green-600"
+                      }`}
                     >
-                      Copy Freeze Block
-                    </button>
-                  )}
-                </td>
-                <td className="py-2 pr-3 text-xs text-primary/70 max-w-[250px]">
-                  {ioc.type === 'url' ? 'Java String Constant' : (ioc.type === 'domain' || ioc.type === 'ip') ? 'Decompiled Source' : ioc.context}
-                </td>
-                <td className="py-2 pr-3 text-right">
-                  <span
-                    className={`text-xs font-mono font-semibold ${
-                      ioc.confidence >= 80 ? "text-red-600" : ioc.confidence >= 60 ? "text-orange-600" : "text-green-600"
-                    }`}
-                  >
-                    {ioc.confidence >= 80 ? "🔴 High" : ioc.confidence >= 60 ? "🟡 Medium" : "🟢 Low"}
-                  </span>
-                </td>
-                <td className="py-2 text-xs font-mono text-primary/60 whitespace-nowrap">
-                  {ioc.first_seen ? new Date(ioc.first_seen).toLocaleString() : "N/A"}
-                </td>
-              </tr>
-            ))}
+                      {ioc.confidence >= 80 ? "🔴 High" : ioc.confidence >= 60 ? "🟡 Medium" : "🟢 Low"}
+                    </span>
+                  </td>
+                  <td className="py-2 text-xs font-mono text-primary/60 whitespace-nowrap">
+                    {ioc.first_seen ? new Date(ioc.first_seen).toLocaleString() : "N/A"}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

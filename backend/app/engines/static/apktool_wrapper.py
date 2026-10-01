@@ -21,8 +21,9 @@ def _find_apktool() -> Optional[str]:
     result = shutil.which("apktool")
     if result:
         return result
-    # Check local tools directory (backend/tools/)
-    tools_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "tools")
+    # Check local tools directory (project_root/tools/)
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    tools_dir = os.path.join(os.path.dirname(backend_dir), "tools")
     local_jar = os.path.join(tools_dir, "apktool.jar")
     if os.path.isfile(local_jar):
         return local_jar

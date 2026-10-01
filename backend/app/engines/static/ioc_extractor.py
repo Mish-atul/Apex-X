@@ -137,6 +137,7 @@ SCANNABLE_EXTENSIONS = {
 def extract_iocs_from_file(file_path: str) -> Dict[str, Any]:
     """
     Extract all IOC types from a single file.
+    Tracks code_references mapping each IOC to file:line locations.
     """
     result = {
         "urls": set(),
@@ -148,72 +149,99 @@ def extract_iocs_from_file(file_path: str) -> Dict[str, Any]:
         "base64_urls": set(),
         "upi_ids": set(),
         "ifsc_bank_pairs": list(),
+        "code_references": {},  # ioc_value -> [{file, line, context}]
     }
 
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
+            lines = f.readlines()
     except Exception as e:
         logger.warning(f"Failed to read {file_path}: {e}")
         return _sets_to_lists(result)
 
-    # URLs
-    for url in URL_REGEX.findall(content):
-        if not _is_whitelisted_url(url):
-            # Normalize URL by removing trailing slash
-            normalized = url.rstrip(".,;:)]}/")
-            result["urls"].add(normalized)
+    content = "".join(lines)
+    rel_path = file_path  # Will be made relative in the directory scanner
 
-    # IP addresses
-    for ip in IP_REGEX.findall(content):
-        if not _is_whitelisted_ip(ip):
-            result["ips"].add(ip)
+    def _add_ref(ioc_value: str, line_num: int, line_text: str):
+        """Add a code reference for an IOC."""
+        if ioc_value not in result["code_references"]:
+            result["code_references"][ioc_value] = []
+        # Only keep first 3 references per IOC per file
+        if len(result["code_references"][ioc_value]) < 3:
+            result["code_references"][ioc_value].append({
+                "file": rel_path,
+                "line": line_num,
+                "context": line_text.strip()[:200],
+            })
 
-    # Domains — with heavy false positive filtering
-    for domain in DOMAIN_REGEX.findall(content):
-        d = domain.lower()
-        if d in WHITELISTED_DOMAINS:
-            continue
-        # Filter Java/Kotlin identifiers (rect.top, logger.info, etc.)
-        if any(d.endswith(suffix) for suffix in JAVA_FALSE_POSITIVE_SUFFIXES):
-            continue
-        # Filter Java/Android package names
-        if any(d.startswith(prefix) for prefix in JAVA_PACKAGE_PREFIXES):
-            continue
-        # Must have at least 2 parts and the first part should be > 1 char
-        parts = d.split(".")
-        if len(parts) < 2 or len(parts[0]) <= 1:
-            continue
-        # Filter single-word identifiers that look like code (camelCase, underscore)
-        if "_" in parts[0] or (parts[0] != parts[0].lower() and not parts[0].startswith("www")):
-            continue
-        result["domains"].add(d)
+    # Scan line-by-line for IOCs with line number tracking
+    for line_num, line in enumerate(lines, 1):
+        # URLs
+        for url in URL_REGEX.findall(line):
+            if not _is_whitelisted_url(url):
+                normalized = url.rstrip(".,;:)]}/ ")
+                result["urls"].add(normalized)
+                _add_ref(normalized, line_num, line)
 
-    # Emails
-    for email in EMAIL_REGEX.findall(content):
-        domain = email.split('@')[-1].lower()
-        if not any(domain.endswith(d) for d in ["android.com", "google.com", "example.com"]):
-            result["emails"].add(email)
+        # IP addresses
+        for ip in IP_REGEX.findall(line):
+            if not _is_whitelisted_ip(ip):
+                result["ips"].add(ip)
+                _add_ref(ip, line_num, line)
 
-    # Crypto wallets
-    for addr in BTC_REGEX.findall(content):
-        result["crypto_wallets"].add(f"btc:{addr}")
-    for addr in BTC_BECH32_REGEX.findall(content):
-        result["crypto_wallets"].add(f"btc:{addr}")
-    for addr in ETH_REGEX.findall(content):
-        result["crypto_wallets"].add(f"eth:{addr}")
-    for addr in XMR_REGEX.findall(content):
-        result["crypto_wallets"].add(f"xmr:{addr}")
+        # Domains
+        for domain in DOMAIN_REGEX.findall(line):
+            d = domain.lower()
+            if d in WHITELISTED_DOMAINS:
+                continue
+            # Filter Java/Kotlin identifiers (rect.top, logger.info, etc.)
+            if any(d.endswith(suffix) for suffix in JAVA_FALSE_POSITIVE_SUFFIXES):
+                continue
+            # Filter Java/Android package names
+            if any(d.startswith(prefix) for prefix in JAVA_PACKAGE_PREFIXES):
+                continue
+            # Must have at least 2 parts and the first part should be > 1 char
+            parts = d.split(".")
+            if len(parts) < 2 or len(parts[0]) <= 1:
+                continue
+            # Filter single-word identifiers that look like code (camelCase, underscore)
+            if "_" in parts[0] or (parts[0] != parts[0].lower() and not parts[0].startswith("www")):
+                continue
+            result["domains"].add(d)
+            _add_ref(d, line_num, line)
 
-    # API keys and secrets
-    for key in API_KEY_REGEX.findall(content):
-        result["api_keys"].add(key)
-    for key in AWS_KEY_REGEX.findall(content):
-        result["api_keys"].add(f"aws:{key}")
-    for key in GOOGLE_API_REGEX.findall(content):
-        result["api_keys"].add(f"google:{key}")
+        # Emails
+        for email in EMAIL_REGEX.findall(line):
+            domain = email.split('@')[-1].lower()
+            if not any(domain.endswith(d) for d in ["android.com", "google.com", "example.com"]):
+                result["emails"].add(email)
+                _add_ref(email, line_num, line)
 
-    # Base64-encoded URLs
+        # Crypto wallets
+        for addr in BTC_REGEX.findall(line):
+            result["crypto_wallets"].add(f"btc:{addr}")
+            _add_ref(f"btc:{addr}", line_num, line)
+        for addr in ETH_REGEX.findall(line):
+            result["crypto_wallets"].add(f"eth:{addr}")
+            _add_ref(f"eth:{addr}", line_num, line)
+
+        # API keys and secrets
+        for key in API_KEY_REGEX.findall(line):
+            result["api_keys"].add(key)
+            _add_ref(key, line_num, line)
+        for key in AWS_KEY_REGEX.findall(line):
+            result["api_keys"].add(f"aws:{key}")
+            _add_ref(f"aws:{key}", line_num, line)
+        for key in GOOGLE_API_REGEX.findall(line):
+            result["api_keys"].add(f"google:{key}")
+            _add_ref(f"google:{key}", line_num, line)
+
+        # UPI IDs
+        for upi in UPI_REGEX.findall(line):
+            result["upi_ids"].add(upi)
+            _add_ref(upi, line_num, line)
+
+    # Base64-encoded URLs (whole content scan — not line-level)
     for b64 in BASE64_REGEX.findall(content):
         try:
             decoded = base64.b64decode(b64).decode("utf-8", errors="ignore")
@@ -223,13 +251,8 @@ def extract_iocs_from_file(file_path: str) -> Dict[str, Any]:
                     result["base64_urls"].add(url)
         except Exception:
             pass
-            
-    # Financial indicators
-    for upi in UPI_REGEX.findall(content):
-        result["upi_ids"].add(upi)
-        
-    # Contextual Bank Accounts
-    # Find IFSC codes first
+
+    # Contextual Bank Accounts (whole content scan)
     for ifsc_match in IFSC_REGEX.finditer(content):
         ifsc_code = ifsc_match.group(0)
         start_pos = max(0, ifsc_match.start() - 100)
@@ -263,12 +286,13 @@ def extract_iocs_from_directory(directory: str) -> Dict[str, Any]:
         "base64_urls": set(),
         "upi_ids": set(),
         "ifsc_bank_pairs": list(),
+        "code_references": {},  # ioc_value -> [{file, line, context}]
     }
     files_scanned = 0
 
     if not os.path.isdir(directory):
         logger.error(f"Directory not found: {directory}")
-        return {**_sets_to_lists(aggregated), "files_scanned": 0}
+        return {**_sets_to_lists(aggregated), "files_scanned": 0, "code_references": {}}
 
     for root, _dirs, files in os.walk(directory):
         for filename in files:
@@ -289,11 +313,29 @@ def extract_iocs_from_directory(directory: str) -> Dict[str, Any]:
             file_iocs = extract_iocs_from_file(file_path)
 
             for key in aggregated:
+                if key == "code_references":
+                    continue  # Handle separately
                 if key in file_iocs:
                     if isinstance(aggregated[key], set):
                         aggregated[key].update(file_iocs[key])
                     elif isinstance(aggregated[key], list):
                         aggregated[key].extend(file_iocs[key])
+
+            # Merge code_references with relative paths
+            for ioc_val, refs in file_iocs.get("code_references", {}).items():
+                if ioc_val not in aggregated["code_references"]:
+                    aggregated["code_references"][ioc_val] = []
+                for ref in refs:
+                    # Make path relative to the scan directory
+                    rel = os.path.relpath(ref["file"], directory)
+                    aggregated["code_references"][ioc_val].append({
+                        "file": rel.replace("\\", "/"),
+                        "line": ref["line"],
+                        "context": ref["context"],
+                    })
+                # Cap at 5 references per IOC across all files
+                aggregated["code_references"][ioc_val] = aggregated["code_references"][ioc_val][:5]
+
 
     result = _sets_to_lists(aggregated)
     result["files_scanned"] = files_scanned

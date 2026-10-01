@@ -35,6 +35,11 @@ export interface IOCEntry {
   context: string;
   confidence: number;
   first_seen: string;
+  code_references?: Array<{
+    file: string;
+    line: number;
+    context?: string;
+  }>;
 }
 
 export interface Vulnerability {
