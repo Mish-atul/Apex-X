@@ -183,12 +183,10 @@ def run_full_static_analysis(apk_path: str, case_dir: str) -> Dict[str, Any]:
     logger.info("Step 5/6: YARA rule scanning")
     yara_results = {}
     try:
-        # Scan decompiled directory
-        scan_targets = []
-        if apktool_dir and os.path.isdir(apktool_dir):
-            scan_targets.append(apktool_dir)
-        if jadx_dir and os.path.isdir(jadx_dir):
-            scan_targets.append(jadx_dir)
+        # Prefer jadx_dir (clean decompiled Java), fallback to apktool_dir if jadx produced no files
+        has_jadx = jadx_dir and os.path.isdir(jadx_dir) and any(os.scandir(jadx_dir))
+        primary_scan_dir = jadx_dir if has_jadx else (apktool_dir if (apktool_dir and os.path.isdir(apktool_dir)) else None)
+        scan_targets = [primary_scan_dir] if primary_scan_dir else []
 
         compiled_rules = yara_scanner.compile_rules()
         all_yara_matches = []
@@ -206,7 +204,7 @@ def run_full_static_analysis(apk_path: str, case_dir: str) -> Dict[str, Any]:
             logger.info("Finished scanning raw APK bytes.")
             all_yara_matches.extend(apk_result.get("matches", []))
 
-            # Deduplicate by rule name
+            # Deduplicate by rule name + file
             seen_rules = set()
             unique_matches = []
             for m in all_yara_matches:
@@ -239,8 +237,8 @@ def run_full_static_analysis(apk_path: str, case_dir: str) -> Dict[str, Any]:
     logger.info("Step 6/6: IOC extraction")
     ioc_results = {}
     try:
-        # Scan all decompiled outputs
-        scan_dirs = [d for d in [apktool_dir, jadx_dir] if d and os.path.isdir(d)]
+        # Use single primary scan directory to prevent 2x duplicate artifacts
+        scan_dirs = scan_targets
 
         aggregated_iocs = {
             "urls": set(), "ips": set(), "domains": set(),
@@ -289,6 +287,24 @@ def run_full_static_analysis(apk_path: str, case_dir: str) -> Dict[str, Any]:
     except Exception as e:
         result["steps"]["baas_detection"] = {"status": "error", "error": str(e)}
         result["errors"].append(f"BaaS detection error: {e}")
+
+    # ── Step 6.6: APKiD — packers / obfuscators / anti-analysis ──
+    logger.info("Step 6.6/7: APKiD packer & anti-analysis detection")
+    try:
+        from app.engines.static import apkid_scanner
+        result["steps"]["apkid"] = {"status": "success", "data": apkid_scanner.scan_apk(apk_path)}
+    except Exception as e:
+        result["steps"]["apkid"] = {"status": "error", "error": str(e)}
+        result["errors"].append(f"APKiD error: {e}")
+
+    # ── Step 6.7: Quark-Engine — rule-based behaviour scoring ──
+    logger.info("Step 6.7/7: Quark-Engine behaviour rules")
+    try:
+        from app.engines.static import quark_scanner
+        result["steps"]["quark"] = {"status": "success", "data": quark_scanner.scan_apk(apk_path)}
+    except Exception as e:
+        result["steps"]["quark"] = {"status": "error", "error": str(e)}
+        result["errors"].append(f"Quark-Engine error: {e}")
 
     # ── Step 7: Risk Scoring ─────────────────────────────────
     logger.info("Step 7/7: Risk scoring")

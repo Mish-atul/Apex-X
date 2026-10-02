@@ -8,7 +8,7 @@ and chain of evidence for law enforcement officers.
 import os
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 from app.engines.intelligence import llm_client
 

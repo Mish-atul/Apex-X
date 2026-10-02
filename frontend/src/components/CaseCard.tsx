@@ -5,6 +5,7 @@ import type { CaseResponse } from "@/services/api";
 import { deleteCase } from "@/services/api";
 import { ChevronRight, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { useFeedback } from "@/components/Feedback";
 
 interface CaseCardProps {
   caseData: CaseResponse;
@@ -36,26 +37,31 @@ export default function CaseCard({ caseData, onDeleted }: CaseCardProps) {
   const status = statusConfig[caseData.status] || statusConfig.pending;
   const score = caseData.threat_score || 0;
   const [isDeleting, setIsDeleting] = useState(false);
+  const { toast, confirm } = useFeedback();
 
   const handleDelete = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
-    const confirmed = window.confirm(
-      `🗑️ Delete "${caseData.apk_name}"?\n\nThis will permanently remove the case and all analysis results from the database and disk.`
-    );
+    const confirmed = await confirm({
+      title: `Delete “${caseData.apk_name}”?`,
+      message: "This permanently removes the case and all analysis results from the database and disk.",
+      confirmLabel: "Delete case",
+      tone: "danger",
+    });
     if (!confirmed) return;
 
     try {
       setIsDeleting(true);
       await deleteCase(caseData.id);
+      toast("success", "Case deleted", caseData.apk_name);
       if (onDeleted) {
         onDeleted(caseData.id);
       } else {
         window.location.reload();
       }
     } catch (err) {
-      alert("Failed to delete case: " + err);
+      toast("error", "Failed to delete case", String(err));
     } finally {
       setIsDeleting(false);
     }

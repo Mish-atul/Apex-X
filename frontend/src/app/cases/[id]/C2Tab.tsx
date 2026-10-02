@@ -1,6 +1,5 @@
 import React from "react";
 import NetworkGraph from "@/components/NetworkGraph";
-import { REAL_GRAPH_NODES, REAL_GRAPH_EDGES } from "@/services/realData";
 
 interface C2TabProps {
   caseData: any;
@@ -14,8 +13,8 @@ export default function C2Tab({ caseData, analysisResults, isMockCase }: C2TabPr
     ? analysisResults.find((r: any) => r.phase === "c2_intelligence")?.result
     : (analysisResults?.c2_intelligence || analysisResults?.c2 || {});
   const c2Data = c2Result || {};
-  const c2NodesToUse = isMockCase ? REAL_GRAPH_NODES : (c2Data?.nodes || []);
-  const c2EdgesToUse = isMockCase ? REAL_GRAPH_EDGES : (c2Data?.edges || []);
+  const c2NodesToUse = c2Data?.nodes || [];
+  const c2EdgesToUse = c2Data?.edges || [];
   const attribution = c2Data?.attribution || {};
   
   // Try to use our internal ML classification if VT/external attribution fails
@@ -43,7 +42,7 @@ export default function C2Tab({ caseData, analysisResults, isMockCase }: C2TabPr
   const detections = attribution?.top_detections || [];
   const verdicts = attribution?.sandbox_verdicts || [];
 
-  const hasRealData = !isMockCase && (c2NodesToUse.length > 0 || finalFamily !== "Unknown" || Object.keys(c2Data).length > 0);
+  const hasRealData = c2NodesToUse.length > 0 || finalFamily !== "Unknown" || Object.keys(c2Data).length > 0;
 
   return (
     <div className="space-y-4">
@@ -94,29 +93,14 @@ export default function C2Tab({ caseData, analysisResults, isMockCase }: C2TabPr
       </div>
 
       {/* Attribution + Detections */}
-      {(hasRealData || isMockCase) && (
+      {hasRealData && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Malware Family */}
           <div className="bg-panel border border-border-subtle p-4">
             <h3 className="font-display font-semibold text-sm mb-3 border-b border-border-subtle pb-2">
               Malware Family
             </h3>
-            {isMockCase ? (
-              <div className="space-y-2">
-                <div>
-                  <span className="text-xs font-mono text-primary/60 block">Family</span>
-                  <span className="text-sm font-semibold">SpyAgent / PhishKing variant</span>
-                </div>
-                <div>
-                  <span className="text-xs font-mono text-primary/60 block">First Seen</span>
-                  <span className="text-sm font-mono">2026-01-20</span>
-                </div>
-                <div>
-                  <span className="text-xs font-mono text-primary/60 block">Target Region</span>
-                  <span className="text-sm">India — Banking sector users</span>
-                </div>
-              </div>
-            ) : (
+            {(
               <div className="space-y-2">
                 <div>
                   <span className="text-xs font-mono text-primary/60 block">Family</span>
@@ -167,24 +151,9 @@ export default function C2Tab({ caseData, analysisResults, isMockCase }: C2TabPr
           {/* AV Engine Detections */}
           <div className="bg-panel border border-border-subtle p-4">
             <h3 className="font-display font-semibold text-sm mb-3 border-b border-border-subtle pb-2">
-              {isMockCase ? "Campaign Links" : "Engine Detections"}
+              Engine Detections
             </h3>
-            {isMockCase ? (
-              <div className="space-y-2">
-                <div>
-                  <span className="text-xs font-mono text-primary/60 block">Campaign</span>
-                  <span className="text-sm font-semibold">Operation PhishKing</span>
-                </div>
-                <div>
-                  <span className="text-xs font-mono text-primary/60 block">Threat Actor</span>
-                  <span className="text-sm font-mono">APT-IND-07 (Confidence: 65%)</span>
-                </div>
-                <div>
-                  <span className="text-xs font-mono text-primary/60 block">Motivation</span>
-                  <span className="text-sm">Financial — Banking credential theft</span>
-                </div>
-              </div>
-            ) : (
+            {(
               <div className="space-y-1 max-h-64 overflow-y-auto">
                 {detections.length === 0 ? (
                   <p className="text-xs text-primary/50 italic">No detections recorded</p>

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Timeouts (seconds)
 ADB_COMMAND_TIMEOUT = 30
-INSTALL_TIMEOUT = 60
+INSTALL_TIMEOUT = int(os.environ.get("APEX_INSTALL_TIMEOUT", "180"))  # install-multiple on a cold emulator can exceed 60s
 MONKEY_TIMEOUT = 120
 LOGCAT_PARSE_MAX = 5000
 
@@ -117,6 +117,18 @@ def get_package_name(apk_path: str) -> Optional[str]:
     if not adb:
         return None
 
+    # Check if APK is tampered and repair first so aapt2 can parse the manifest
+    target_apk = apk_path
+    try:
+        from app.utils.apk_repair import is_apk_tampered, repair_and_sign_apk
+        tampered, _ = is_apk_tampered(apk_path)
+        if tampered:
+            repaired = repair_and_sign_apk(apk_path)
+            if repaired and os.path.isfile(repaired):
+                target_apk = repaired
+    except Exception:
+        pass
+
     # Try aapt2 first (in build-tools)
     sdk_root = os.path.dirname(os.path.dirname(adb))
     build_tools = os.path.join(sdk_root, "build-tools")
@@ -134,8 +146,8 @@ def get_package_name(apk_path: str) -> Optional[str]:
     if aapt_bin:
         try:
             result = subprocess.run(
-                [aapt_bin, "dump", "packagename", apk_path],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
+                [aapt_bin, "dump", "packagename", target_apk],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
@@ -145,7 +157,7 @@ def get_package_name(apk_path: str) -> Optional[str]:
     # Fallback: try androguard
     try:
         from androguard.core.apk import APK
-        apk = APK(apk_path)
+        apk = APK(target_apk)
         return apk.get_package()
     except Exception:
         pass
@@ -154,7 +166,7 @@ def get_package_name(apk_path: str) -> Optional[str]:
 
 
 def install_apk(apk_path: str, package_name: str, device: Optional[str] = None) -> Dict[str, Any]:
-    """Install APK on device."""
+    """Install APK on device, automatically neutralizing anti-analysis tampering."""
     logger.info(f"Installing APK: {apk_path}")
     
     # Always uninstall first to prevent INSTALL_FAILED_UPDATE_INCOMPATIBLE
@@ -162,8 +174,76 @@ def install_apk(apk_path: str, package_name: str, device: Optional[str] = None) 
         logger.info(f"Pre-emptively uninstalling {package_name} to clear old signatures...")
         uninstall_apk(package_name, device=device)
         
-    # -g grants all runtime permissions automatically
-    result = _run_adb(["install", "-g", "-r", "-t", apk_path], device=device, timeout=INSTALL_TIMEOUT)
+    actual_apk_path = apk_path
+    try:
+        from app.utils.apk_repair import is_apk_tampered, repair_and_sign_apk
+        tampered, corrupted = is_apk_tampered(apk_path)
+        if tampered:
+            logger.warning(f"APK anti-analysis tampering detected ({corrupted}). Repairing and re-signing before install...")
+            repaired = repair_and_sign_apk(apk_path)
+            if repaired and os.path.isfile(repaired):
+                actual_apk_path = repaired
+    except Exception as e:
+        logger.warning(f"APK tamper check/repair error: {e}")
+
+    # -g grants all runtime permissions; --bypass-low-target-sdk-block lets old
+    # samples (targetSdk < 24) install on modern Android (ignored on older images).
+    base_flags = ["install", "-g", "-r", "-t", "--bypass-low-target-sdk-block"]
+
+    # Split-APK bundle: install base + all splits together with install-multiple
+    try:
+        from app.utils.file_utils import get_split_apks
+        splits = [p for p in get_split_apks(apk_path) if os.path.isfile(p)]
+    except Exception as e:
+        logger.warning(f"Split lookup failed: {e}")
+        splits = []
+    if splits:
+        logger.info(f"Split-APK bundle detected: installing base + {len(splits)} split(s) via install-multiple")
+
+    resigned_splits: List[str] = []
+
+    def _splits_for(path):
+        # A repaired base is re-signed with the debug key; every split must carry the
+        # same signature or install-multiple fails, so re-sign copies of the splits too.
+        if not splits or path == apk_path:
+            return splits
+        if not resigned_splits:
+            from app.utils.apk_repair import sign_apk_copy
+            for s in splits:
+                signed = sign_apk_copy(s)
+                if not signed:
+                    logger.warning(f"Could not re-sign split {s}; installing original")
+                resigned_splits.append(signed or s)
+        return resigned_splits
+
+    def _install(path):
+        cmd = "install-multiple" if splits else "install"
+        paths = [path] + _splits_for(path)
+        res = _run_adb([cmd] + base_flags[1:] + paths, device=device, timeout=INSTALL_TIMEOUT)
+        if not res["success"] and "bypass-low-target-sdk-block" in (res.get("error") or ""):
+            # Flag unsupported on this API level — retry without it
+            res = _run_adb([cmd, "-g", "-r", "-t"] + paths, device=device, timeout=INSTALL_TIMEOUT)
+        return res
+
+    result = _install(actual_apk_path)
+    if not result["success"] and "not enough space" in (result.get("error") or "") + result.get("stdout", ""):
+        logger.warning("Device storage low; trimming caches and retrying install")
+        _run_adb(["shell", "pm", "trim-caches", "999G"], device=device, timeout=120)
+        result = _install(actual_apk_path)
+    
+    # If install failed due to parse error, invalid cert, or corrupt headers, try repair fallback
+    if not result["success"] and actual_apk_path == apk_path:
+        err = result.get("error", "")
+        if any(tok in err for tok in ["INSTALL_PARSE_FAILED", "INSTALL_FAILED_INVALID_APK", "INSTALL_FAILED_NO_CERTIFICATES", "Failed to parse", "CORRUPT"]):
+            logger.warning(f"Install failed with parse/cert error: {err}. Attempting APK header repair & re-sign...")
+            try:
+                from app.utils.apk_repair import repair_and_sign_apk
+                repaired = repair_and_sign_apk(apk_path)
+                if repaired and os.path.isfile(repaired):
+                    result = _install(repaired)
+            except Exception as e:
+                logger.error(f"Fallback APK repair failed: {e}")
+
     if result["success"]:
         logger.info("APK installed successfully")
         

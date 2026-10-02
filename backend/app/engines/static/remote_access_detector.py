@@ -5,10 +5,10 @@ permission + a bundled remote-desktop SDK as a highly distinctive pattern
 for screen-share / remote-access scams.
 """
 
+from app.utils.file_utils import long_path
 import os
-import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,8 @@ def detect_remote_access_abuse(manifest_data: Dict[str, Any], apktool_dir: str) 
     found_sdk = None
     for smali_dir in smali_dirs:
         smali_path = os.path.join(apktool_dir, smali_dir)
-        for root, dirs, _ in os.walk(smali_path):
-            rel_path = os.path.relpath(root, smali_path)
+        for root, dirs, _ in os.walk(long_path(smali_path)):
+            rel_path = os.path.relpath(root, long_path(smali_path))
             # normalize path separator for comparison
             normalized_path = rel_path.replace("\\", "/")
             

@@ -8,6 +8,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useEffect } from "react";
 
 import Header from "@/components/Header";
+import { FeedbackProvider } from "@/components/Feedback";
 import { pingAPI } from "@/services/api";
 
 export default function RootLayout({
@@ -55,11 +56,13 @@ export default function RootLayout({
           <div className="absolute bottom-[-20%] left-[20%] w-[70vw] h-[50vh] aurora-blob-3 rounded-full blur-[130px]" />
         </div>
 
-        {/* Navigation */}
-        <Header />
+        <FeedbackProvider>
+          {/* Navigation */}
+          <Header />
 
-        {/* Main Content */}
-        <div className="flex-1 flex flex-col relative pt-20">{children}</div>
+          {/* Main Content */}
+          <div className="flex-1 flex flex-col relative pt-20">{children}</div>
+        </FeedbackProvider>
       </body>
     </html>
   );

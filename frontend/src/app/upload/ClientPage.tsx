@@ -50,8 +50,9 @@ export default function IntakePage() {
 
   const validateAndSetFile = (selectedFile: File) => {
     setError(null);
-    if (!selectedFile.name.toLowerCase().endsWith(".apk")) {
-      setError("Invalid file type. Only .apk files are accepted.");
+    const lowerName = selectedFile.name.toLowerCase();
+    if (![".apk", ".xapk", ".apks", ".apkm"].some((ext) => lowerName.endsWith(ext))) {
+      setError("Invalid file type. Accepted: .apk, .xapk, .apks, .apkm.");
       return;
     }
     if (selectedFile.size > 200 * 1024 * 1024) { // 200MB limit
@@ -137,7 +138,7 @@ export default function IntakePage() {
             type="file" 
             ref={fileInputRef} 
             onChange={handleFileChange}
-            accept=".apk"
+            accept=".apk,.xapk,.apks,.apkm"
             className="hidden" 
           />
 
@@ -173,7 +174,7 @@ export default function IntakePage() {
             <>
               <UploadCloud className={`w-12 h-12 mb-4 ${isDragging ? "text-primary" : "text-primary/40"}`} />
               <h2 className="font-semibold text-base text-primary mb-1">
-                Drag & Drop APK File
+                Drag & Drop APK or Bundle (.xapk, .apks, .apkm)
               </h2>
               <p className="text-xs text-primary/60 mb-6">
                 or click to browse local files (Max 200MB)

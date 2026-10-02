@@ -7,7 +7,7 @@ context to answer investigator queries using the local LLM.
 import os
 import json
 import logging
-from typing import List, Dict, Any
+from typing import List
 
 from app.config import settings
 from app.engines.intelligence import llm_client
@@ -17,25 +17,55 @@ logger = logging.getLogger(__name__)
 try:
     import chromadb
     from chromadb.config import Settings as ChromaSettings
-    # Use LangChain for easy chunking/embedding, but fall back if not available
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-    LANGCHAIN_AVAILABLE = True
+    CHROMA_AVAILABLE = True
 except ImportError:
-    LANGCHAIN_AVAILABLE = False
-    logger.warning("chromadb or langchain not installed. Install: pip install chromadb langchain")
+    CHROMA_AVAILABLE = False
+    logger.warning("chromadb not installed. Co-Pilot RAG disabled. Install: pip install chromadb")
+
+# Local persistent store so RAG needs no separate ChromaDB server
+_CHROMA_PATH = settings.CHROMA_DIR
+
+
+def _split_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    """Dependency-free chunker: splits on paragraph/line boundaries with overlap."""
+    text = text or ""
+    if len(text) <= chunk_size:
+        return [text] if text.strip() else []
+    chunks, start = [], 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        # Prefer to break on a newline near the chunk boundary for cleaner chunks
+        if end < len(text):
+            nl = text.rfind("\n", start + chunk_size - overlap, end)
+            if nl > start:
+                end = nl
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(text):
+            break
+        start = max(end - overlap, start + 1)
+    return chunks
 
 
 def _get_chroma_client():
-    if not LANGCHAIN_AVAILABLE:
+    if not CHROMA_AVAILABLE:
         return None
+    # Prefer a configured ChromaDB server; fall back to an embedded local store
     try:
-        return chromadb.HttpClient(
-            host=settings.CHROMADB_HOST,
-            port=settings.CHROMADB_PORT,
-            settings=ChromaSettings(allow_reset=True)
-        )
+        if getattr(settings, "CHROMADB_HOST", None):
+            return chromadb.HttpClient(
+                host=settings.CHROMADB_HOST,
+                port=settings.CHROMADB_PORT,
+                settings=ChromaSettings(allow_reset=True),
+            )
     except Exception as e:
-        logger.error(f"Failed to connect to ChromaDB: {e}")
+        logger.info(f"ChromaDB server unavailable ({e}); using local persistent store")
+    try:
+        os.makedirs(_CHROMA_PATH, exist_ok=True)
+        return chromadb.PersistentClient(path=_CHROMA_PATH)
+    except Exception as e:
+        logger.error(f"Failed to initialise local ChromaDB: {e}")
         return None
 
 
@@ -94,15 +124,9 @@ def index_case_artifacts(case_id: str, case_dir: str) -> bool:
             return False
 
         # 2. Chunk text
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len,
-        )
-        
         chunks = []
         for text in texts_to_index:
-            chunks.extend(text_splitter.split_text(text))
+            chunks.extend(_split_text(text, chunk_size=1000, overlap=200))
 
         # 3. Add to ChromaDB
         # We use ChromaDB's default embedding function (all-MiniLM-L6-v2) for simplicity

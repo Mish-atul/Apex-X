@@ -5,7 +5,7 @@ derived from static analysis findings.
 """
 
 import logging
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 

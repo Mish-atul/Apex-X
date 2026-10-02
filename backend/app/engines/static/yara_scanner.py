@@ -4,6 +4,7 @@ Scans decompiled APK output against YARA rules for malware pattern detection.
 Uses the yara-python library for rule compilation and matching.
 """
 
+from app.utils.file_utils import long_path
 import os
 import logging
 from typing import Dict, Any, List, Optional
@@ -87,11 +88,13 @@ def scan_file(file_path: str, rules) -> List[Dict[str, Any]]:
     matches = []
 
     try:
-        file_size = os.path.getsize(file_path)
+        io_path = long_path(file_path)
+        file_size = os.path.getsize(io_path)
         if file_size > MAX_FILE_SIZE:
             return matches
 
-        yara_matches = rules.match(file_path, timeout=30)
+        with open(io_path, "rb") as fh:
+            yara_matches = rules.match(data=fh.read(), timeout=30)
 
         for match in yara_matches:
             matched_strings = []
@@ -190,7 +193,7 @@ def scan_directory(
 
     matched_rules = set()
 
-    for root, _dirs, files in os.walk(directory):
+    for root, _dirs, files in os.walk(long_path(directory)):
         for filename in files:
             # Check file extension
             _, ext = os.path.splitext(filename)
@@ -204,7 +207,7 @@ def scan_directory(
                 file_matches = scan_file(file_path, rules)
                 for match in file_matches:
                     # Use relative path in output
-                    match["file"] = os.path.relpath(file_path, directory)
+                    match["file"] = os.path.relpath(file_path, long_path(directory))
                     result["matches"].append(match)
                     result["total_matches"] += 1
                     matched_rules.add(match["rule"])

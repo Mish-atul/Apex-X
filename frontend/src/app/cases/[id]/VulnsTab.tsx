@@ -1,6 +1,5 @@
 import React from "react";
 import VulnerabilityCard from "@/components/VulnerabilityCard";
-import { REAL_VULNERABILITIES } from "@/services/realData";
 
 interface VulnsTabProps {
   caseData: any;
@@ -14,9 +13,7 @@ export default function VulnsTab({ caseData, analysisResults, isMockCase }: Vuln
     ? analysisResults.find((r: any) => r.phase === "vulnerability")?.result 
     : null;
     
-  const vulnsToUse = isMockCase 
-    ? REAL_VULNERABILITIES.filter((v: any) => v.case_id === caseData?.id) 
-    : (vulnResult?.findings || []);
+  const vulnsToUse = vulnResult?.findings || [];
   
   return (
     <div className="space-y-4">

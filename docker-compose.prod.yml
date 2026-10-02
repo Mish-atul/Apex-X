@@ -1,0 +1,39 @@
+# APEX-X production stack
+#   docker compose -f docker-compose.prod.yml up -d --build
+# Frontend: http://localhost:3000 (proxies /api/v1 to the backend container)
+# Backend : http://localhost:8080/docs
+# Dynamic analysis uses the emulator running on the HOST via its adb server.
+services:
+  backend:
+    image: apex-x-backend:latest
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: apex-x-backend
+    ports:
+      - "8080:8080"
+    env_file:
+      - path: .env
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - apex_data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    image: apex-x-frontend:latest
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+        BACKEND_INTERNAL_URL: http://backend:8080
+    container_name: apex-x-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  apex_data:

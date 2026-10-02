@@ -7,10 +7,11 @@ APK → Domain/IP/URL communication paths for C2 attribution.
 import json
 import os
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 from app.engines import virustotal_client
 from app.engines import ipinfo_client
+from app.engines.c2 import infra_enricher
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,6 @@ def build_c2_graph(
     try:
         from app.models.session import SessionLocal
         from app.models.database import PhaseResult
-        import re as _re
         case_uuid = _normalize_case_id(case_dir)
         if case_uuid:
             _db = SessionLocal()
@@ -204,12 +204,17 @@ def build_c2_graph(
                     country = attrs.get("country", "")
                     break
 
+            # Local enrichment: suspicious TLD / DGA elevates risk even without VT data
+            enr = infra_enricher.enrich_domain(domain)
+            if enr.get("risk_indicators") and risk == "medium":
+                risk = "high"
+
             nodes.append({
                 "id": did,
                 "label": domain,
                 "type": "domain",
                 "risk": risk,
-                "metadata": {"country": country},
+                "metadata": {"country": country, "enrichment": enr},
             })
             node_ids.add(did)
             add_edge(apk_id, did, "CONTACTS")

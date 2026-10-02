@@ -126,12 +126,24 @@ def _load_case_context(case_id: str, db: Session) -> Dict[str, Any]:
         elif pr.phase == "dynamic" and pr.result:
             result = pr.result
             context["dynamic_analysis"] = {
-                "monkey_events": result.get("monkey_test", {}).get("events_injected", 0),
-                "monkey_duration": result.get("monkey_test", {}).get("duration_seconds", 0),
-                "api_hooks": result.get("api_hooks", {}),
-                "network_analysis": result.get("network_analysis", {}),
-                "behavioral_flags": result.get("behavioral_analysis", {}).get("flags", []),
+                "status": result.get("status"),
+                "mode": result.get("mode"),  # emulator = real execution, heuristic = code scan only
+                "duration_seconds": result.get("duration_seconds"),
+                "events": [
+                    {k: e.get(k) for k in ("api_call", "category", "risk_level", "description", "source")}
+                    for e in _safe_slice(result.get("events") or [], 60)
+                ],
+                "network_activity": [
+                    {k: n.get(k) for k in ("destination", "ip", "port", "protocol", "bytes_sent", "bytes_received", "static_reference")}
+                    for n in _safe_slice(result.get("network_activity") or [], 30)
+                ],
+                "dns_queries": _safe_slice(result.get("dns_queries"), 30),
+                "dropped_packages": result.get("dropped_packages", []),
+                "running_services": result.get("running_services", []),
+                "app_crashed": result.get("app_crashed"),
+                "behaviors": result.get("behaviors", {}),
                 "risk_score": result.get("risk_score", 0),
+                "errors": result.get("errors", []),
             }
             
         elif pr.phase == "c2_intelligence" and pr.result:

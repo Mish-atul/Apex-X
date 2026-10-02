@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.engines.static import run_full_static_analysis
 from app.engines.dynamic import run_full_dynamic_analysis
-from app.engines.vulnerability import run_vulnerability_analysis
+from app.engines.vulnerability import run_vulnerability_scan
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -100,16 +100,17 @@ def main():
         logger.info("PHASE 3: VULNERABILITY DISCOVERY")
         logger.info("="*50)
         try:
-            static_report_path = os.path.join(case_dir, "static_analysis", "static_report.json")
-            dynamic_report_path = os.path.join(case_dir, "dynamic_analysis", "dynamic_report.json")
-            
-            vuln_result = run_vulnerability_analysis(case_dir, static_report_path, dynamic_report_path)
+            # CLI runs have no database case, so pass a random id (DB fallback is skipped)
+            import uuid
+            vuln_result = run_vulnerability_scan(case_dir, str(uuid.uuid4()))
             results["vulnerability"] = vuln_result
-            
+
+            findings = vuln_result.get("findings", [])
+            by_sev = {s: sum(1 for f in findings if f.get("severity") == s) for s in ("critical", "high", "medium", "low")}
             logger.info("\n[+] Vulnerability Discovery Summary:")
-            logger.info(f"  - Status: {vuln_result.get('status')}")
-            logger.info(f"  - Total Vulnerabilities: {vuln_result.get('total_vulns')}")
-            logger.info(f"  - Critical: {vuln_result.get('critical_count')}, High: {vuln_result.get('high_count')}, Medium: {vuln_result.get('medium_count')}, Low: {vuln_result.get('low_count')}")
+            logger.info(f"  - Status: {vuln_result.get('status')}  Risk score: {vuln_result.get('risk_score')}")
+            logger.info(f"  - Total Vulnerabilities: {len(findings)}")
+            logger.info(f"  - Critical: {by_sev['critical']}, High: {by_sev['high']}, Medium: {by_sev['medium']}, Low: {by_sev['low']}")
             logger.info(f"  - Duration: {vuln_result.get('duration_seconds', 0):.2f}s")
             
         except Exception as e:

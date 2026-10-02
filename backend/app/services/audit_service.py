@@ -1,7 +1,7 @@
 import json
 import os
 from sqlalchemy.orm import Session
-from app.models.database import AuditLog, Case, User
+from app.models.database import AuditLog
 from typing import Optional
 import uuid
 

@@ -57,8 +57,21 @@ def scan_usb_devices() -> List[Dict[str, Any]]:
         serial = parts[0]
         status = parts[1].lower()
 
-        # Skip emulators
-        if serial.startswith("emulator-") or serial.startswith("127.0.0.1") or serial.startswith("localhost:"):
+        is_virtual = serial.startswith(("emulator-", "127.0.0.1", "localhost:"))
+        if is_virtual and status == "device":
+            ver = _get_device_prop(serial, "ro.build.version.release") or "?"
+            devices.append({
+                "serial": serial,
+                "model": _get_device_prop(serial, "ro.product.model") or "Android Emulator",
+                "brand": "Virtual",
+                "android_version": ver,
+                "sdk_version": _get_device_prop(serial, "ro.build.version.sdk") or "?",
+                "status": "ready",
+                "virtual": True,
+                "display_name": f"🖥️ Android Emulator (Android {ver}) — no USB needed",
+            })
+            continue
+        if is_virtual:
             continue
 
         # Extract extra info from key:value tokens in 'adb devices -l' output (e.g. model:M2006C3LI)
@@ -135,8 +148,14 @@ def _is_pcapdroid_installed(device: str) -> bool:
     return result["success"] and PCAPDROID_PACKAGE in result["stdout"]
 
 
+def _is_emulator(device: str) -> bool:
+    return device.startswith(("emulator-", "127.0.0.1", "localhost:"))
+
+
 def _install_pcapdroid(device: str) -> bool:
     """Install PCAPdroid on the device."""
+    if _is_emulator(device):
+        return True  # emulator NIC capture is used instead
     if _is_pcapdroid_installed(device):
         logger.info("PCAPdroid already installed")
         return True
@@ -164,6 +183,12 @@ def _start_pcapdroid_capture(device: str, pcap_dir: str) -> bool:
     # Configure PCAPdroid to save PCAP to the device's sdcard
     device_pcap_path = "/sdcard/apex_capture.pcap"
 
+    if _is_emulator(device):
+        os.makedirs(pcap_dir, exist_ok=True)
+        local = os.path.abspath(os.path.join(pcap_dir, "network_capture.pcap"))
+        res = vm_orchestrator._run_adb(["emu", "network", "capture", "start", local], device=device)
+        return res["success"] and "OK" in res["stdout"]
+
     # Start capture via broadcast intent
     result = vm_orchestrator._run_adb([
         "shell", "am", "broadcast",
@@ -183,6 +208,10 @@ def _start_pcapdroid_capture(device: str, pcap_dir: str) -> bool:
 
 def _stop_pcapdroid_capture(device: str, output_dir: str) -> Optional[str]:
     """Stop PCAPdroid capture and pull the PCAP file."""
+    if _is_emulator(device):
+        vm_orchestrator._run_adb(["emu", "network", "capture", "stop"], device=device)
+        local = os.path.join(output_dir, "network_capture.pcap")
+        return local if os.path.exists(local) else None
     # Stop capture via broadcast intent
     vm_orchestrator._run_adb([
         "shell", "am", "broadcast",
@@ -423,12 +452,12 @@ def _get_package_network_connections(device: str, package_name: str) -> List[Dic
 # ── Root Detection ──────────────────────────────────────────────────
 
 def _check_root_access(device: str) -> bool:
-    """Check if the device has root (su) access."""
-    result = vm_orchestrator._run_adb(
-        ["shell", "su", "-c", "id"],
-        device=device, timeout=5
-    )
-    return result["success"] and "uid=0" in result.get("stdout", "")
+    """Check for root: adb shell already uid 0 (emulator `adb root`), or su (Magisk / `su 0`)."""
+    for cmd in (["shell", "id"], ["shell", "su", "-c", "id"], ["shell", "su", "0", "id"]):
+        result = vm_orchestrator._run_adb(cmd, device=device, timeout=5)
+        if "uid=0" in result.get("stdout", ""):
+            return True
+    return False
 
 
 # ── Logcat Monitoring Thread ────────────────────────────────────────
@@ -593,7 +622,7 @@ def _logcat_monitor_thread(session: Dict[str, Any]):
                         "id": str(uuid4()),
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "api_call": "Package Install Attempt",
-                        "description": f"Target app is attempting to install a package: {msg[:200] if msg else line[:200]}",
+                        "description": f"Target app is attempting to install a package: {line[:200]}",
                         "category": "dropper",
                         "risk_level": "CRITICAL",
                         "class_name": package_name,
@@ -1185,21 +1214,12 @@ def _parse_proc_net(raw: str, protocol: str = "TCP") -> list:
             hex_ip, hex_port = remote.split(":")
             port = int(hex_port, 16)
 
-            if len(hex_ip) == 8:
-                # IPv4
-                ip_int = int(hex_ip, 16)
-                ip = f"{ip_int & 0xFF}.{(ip_int >> 8) & 0xFF}.{(ip_int >> 16) & 0xFF}.{(ip_int >> 24) & 0xFF}"
-            elif len(hex_ip) == 32:
-                # IPv6 — extract last 4 bytes as IPv4 if it's a mapped address
-                if hex_ip[:24] == "0000000000000000FFFF0000" or hex_ip[:24] == "0000000000000000ffff0000":
-                    v4_hex = hex_ip[24:]
-                    ip_int = int(v4_hex, 16)
-                    ip = f"{ip_int & 0xFF}.{(ip_int >> 8) & 0xFF}.{(ip_int >> 16) & 0xFF}.{(ip_int >> 24) & 0xFF}"
-                else:
-                    # Full IPv6 — format as hex groups
-                    ip = ":".join(hex_ip[i:i+4] for i in range(0, 32, 4))
-            else:
+            if len(hex_ip) not in (8, 32):
                 continue
+            # /proc/net stores each 32-bit word little-endian; shared converter
+            # handles IPv4, IPv4-mapped IPv6 and full IPv6 correctly.
+            from app.engines.dynamic.emulator_manager import _hex_to_ip
+            ip = _hex_to_ip(hex_ip)
 
             # Skip loopback, unspecified, and private ranges
             if ip in ("0.0.0.0", "127.0.0.1", "::1", "0000:0000:0000:0000:0000:0000:0000:0001"):
@@ -1777,10 +1797,9 @@ def start_monitoring_session(
     apk_installed = False
     if apk_path and os.path.exists(apk_path):
         logger.info(f"[Pentest] Installing target APK on device: {apk_path}")
-        install_result = vm_orchestrator._run_adb(
-            ["install", "-r", "-g", apk_path],
-            device=device_serial, timeout=120
-        )
+        # Shared installer: handles split-APK bundles (install-multiple),
+        # old target SDKs and malformed APKs the same way as automated runs.
+        install_result = vm_orchestrator.install_apk(apk_path, target_package, device=device_serial)
         # Check if package is installed on device
         current_check = _snapshot_packages(device_serial)
         if (install_result["success"] and "Success" in install_result.get("stdout", "")) or (target_package and target_package in current_check):

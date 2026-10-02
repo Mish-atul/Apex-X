@@ -1,36 +1,34 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# APEX-X Frontend
 
-## Getting Started
+Next.js 16 (React 19) web interface for the APEX-X platform: dashboard, APK upload, per-case analysis tabs, reports and threat map.
 
-First, run the development server:
+## Development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+echo NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1 > .env.local
+npm run dev        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Quality checks
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npx tsc --noEmit   # type check
+npx eslint src     # lint
+npm run build      # production build
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Structure
 
-## Learn More
+| Path | Purpose |
+|---|---|
+| `src/app/dashboard` | Case overview and activity feed |
+| `src/app/upload` | APK / split-APK upload |
+| `src/app/cases/[id]` | Overview, Static, Dynamic, C2, Vulnerability and Reports tabs |
+| `src/app/documents` | Reports index (PDF and evidence downloads) |
+| `src/components` | Shared UI (toasts and dialogs, graphs, tables, progress) |
+| `src/services/api.ts` | Backend API client |
 
-To learn more about Next.js, take a look at the following resources:
+`NEXT_PUBLIC_API_URL` is embedded at build time; set it as a build argument when building the Docker image.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+See the [root README](../README.md) for the full platform documentation.

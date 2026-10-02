@@ -61,3 +61,20 @@ mtk_*.txt
 
 # Logs
 logs/
+# Frida server binaries (downloaded on demand)
+tools/frida/
+
+# Runtime data (uploaded APKs, generated reports, chroma index)
+backend/data/cases/
+backend/data/reports/
+backend/data/chroma/
+
+# APK-repair byproducts
+sample_apks/*_clean.apk
+sample_apks/*_repaired.apk
+sample_apks/*.idsig
+
+# Tool logs and build artifacts
+*.quark.log
+dist/
+

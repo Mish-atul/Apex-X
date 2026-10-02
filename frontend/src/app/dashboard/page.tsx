@@ -6,8 +6,15 @@ import { useRouter } from "next/navigation";
 import { ActivitySquare, CheckCircle2, Search, Filter } from "lucide-react";
 import CaseCard from "@/components/CaseCard";
 import PhaseProgress from "@/components/PhaseProgress";
-import { REAL_ACTIVITY, REAL_PHASE_STATUS_ANALYZING } from "@/services/realData";
 import { getCases, CaseResponse } from "@/services/api";
+
+// Pipeline stages shown while a case is being analysed (indeterminate progress)
+const ANALYZING_PHASES = [
+  { phase: "Static Analysis", status: "running" as const, progress: 60, started_at: null, completed_at: null },
+  { phase: "Dynamic Analysis", status: "pending" as const, progress: 0, started_at: null, completed_at: null },
+  { phase: "C2 Intelligence", status: "pending" as const, progress: 0, started_at: null, completed_at: null },
+  { phase: "Vulnerability Scan", status: "pending" as const, progress: 0, started_at: null, completed_at: null },
+];
 
 const containerVariants: Variants = {
   hidden: { opacity: 0 },
@@ -41,7 +48,7 @@ export default function Dashboard() {
     completed: cases.filter((c) => c.status === "completed").length,
   };
 
-  const recentActivities = cases.length > 0 ? cases.map((c) => {
+  const recentActivities = cases.map((c) => {
     let action = "APK_UPLOADED";
     let details = `APK uploaded: ${c.apk_name}`;
     if (c.status === "completed") {
@@ -60,7 +67,7 @@ export default function Dashboard() {
       timestamp: c.updated_at || c.created_at || new Date().toISOString(),
       details,
     };
-  }) : REAL_ACTIVITY;
+  });
 
   return (
     <main className="min-h-screen p-6 md:p-8 max-w-[1600px] mx-auto w-full flex flex-col gap-6">
@@ -158,7 +165,7 @@ export default function Dashboard() {
                           <span className="font-mono text-xs font-semibold">{caseItem.case_number}</span>
                         </div>
                         <p className="text-xs truncate mb-3">{caseItem.apk_name}</p>
-                        <PhaseProgress phases={REAL_PHASE_STATUS_ANALYZING} />
+                        <PhaseProgress phases={ANALYZING_PHASES} />
                       </div>
                     );
                   }
@@ -211,6 +218,11 @@ export default function Dashboard() {
             Recent Activity
           </h3>
           <div className="flex-1 overflow-y-auto space-y-4">
+            {recentActivities.length === 0 && (
+              <p className="text-xs text-text-muted font-mono py-6 text-center">
+                No activity yet. Upload an APK to begin analysis.
+              </p>
+            )}
             {recentActivities.map((activity) => (
               <div key={activity.id} className="relative pl-4 border-l border-border-subtle">
                 <div className="absolute w-2 h-2 bg-primary rounded-full -left-[4.5px] top-1" />

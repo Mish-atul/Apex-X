@@ -5,9 +5,9 @@ Firebase and Supabase credentials, and optionally probes them to see if they
 are completely open (read/write without auth).
 """
 
+from app.utils.file_utils import long_path
 import os
 import re
-import json
 import logging
 import requests
 from typing import Dict, Any, List
@@ -36,7 +36,7 @@ def detect_baas_backends(scan_dirs: List[str]) -> Dict[str, Any]:
         if not scan_dir or not os.path.isdir(scan_dir):
             continue
             
-        for root, _, files in os.walk(scan_dir):
+        for root, _, files in os.walk(long_path(scan_dir)):
             for file in files:
                 if not file.endswith(('.xml', '.smali', '.java', '.json', '.txt', '.properties')):
                     continue

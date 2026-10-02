@@ -5,6 +5,7 @@ Produces structured behavioral events identical to real emulator output.
 Used as fallback when no emulator is available.
 """
 
+from app.utils.file_utils import long_path
 import os
 import re
 import logging
@@ -139,9 +140,9 @@ def scan_java_files(jadx_dir: str) -> List[Dict[str, Any]]:
         sources_dir = jadx_dir
 
     java_files = []
-    for root, dirs, files in os.walk(sources_dir):
+    for root, dirs, files in os.walk(long_path(sources_dir)):
         # Skip common library/framework packages
-        rel = os.path.relpath(root, sources_dir).replace("\\", "/")
+        rel = os.path.relpath(root, long_path(sources_dir)).replace("\\", "/")
         if any(skip in rel for skip in [
             "android/support", "androidx/", "com/google/android",
             "kotlin/", "kotlinx/", "org/intellij", "org/jetbrains",
@@ -165,7 +166,7 @@ def scan_java_files(jadx_dir: str) -> List[Dict[str, Any]]:
         except Exception:
             continue
 
-        rel_path = os.path.relpath(file_path, sources_dir).replace("\\", "/")
+        rel_path = os.path.relpath(file_path, long_path(sources_dir)).replace("\\", "/")
 
         # Extract class name from file
         class_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -267,7 +268,9 @@ def run_heuristic_analysis(case_dir: str) -> Dict[str, Any]:
     start_time = datetime.now(timezone.utc)
 
     # Find JADX output directory
-    jadx_dir = os.path.join(case_dir, "jadx_output")
+    jadx_dir = os.path.join(case_dir, "static_analysis", "jadx_output")
+    if not os.path.isdir(jadx_dir):
+        jadx_dir = os.path.join(case_dir, "jadx_output")
     if not os.path.isdir(jadx_dir):
         jadx_dir = os.path.join(case_dir, "jadx")
     if not os.path.isdir(jadx_dir):
@@ -275,7 +278,7 @@ def run_heuristic_analysis(case_dir: str) -> Dict[str, Any]:
         for name in os.listdir(case_dir):
             candidate = os.path.join(case_dir, name)
             if os.path.isdir(candidate):
-                for root, dirs, files in os.walk(candidate):
+                for root, dirs, files in os.walk(long_path(candidate)):
                     if any(f.endswith(".java") for f in files):
                         jadx_dir = candidate
                         break

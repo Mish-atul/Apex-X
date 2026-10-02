@@ -59,7 +59,7 @@ export default function ThreatMapPage() {
   const [filterClassification, setFilterClassification] = useState<string>("all");
 
   useEffect(() => {
-    fetch("http://localhost:8080/api/v1/cases/threat-map")
+    fetch(`${process.env.NEXT_PUBLIC_API_URL || "/api/v1"}/cases/threat-map`)
       .then((r) => r.json())
       .then((d) => {
         setData(d);

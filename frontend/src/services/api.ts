@@ -1,7 +1,7 @@
 // API service wrapper for APEX-X backend
 // Falls back to mock data when backend is unavailable
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://apex-x-backend.onrender.com/api/v1";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
 
 function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -81,8 +81,6 @@ export async function signupAPI(username: string, password: string) {
 
 // ---- Cases ----
 
-import { REAL_CASES } from "./realData";
-
 export interface CaseResponse {
   id: string;
   case_number: string;
@@ -104,23 +102,14 @@ export interface CaseResponse {
 export async function getCases(): Promise<{ data: CaseResponse[] | null; error: string | null; status: number }> {
   try {
     const response = await apiFetch<CaseResponse[]>("/cases");
-    const realCasesList = response.data || [];
-    // Append the 3 dummy mock cases for demonstration
-    const combined = [...realCasesList, ...(REAL_CASES as unknown as CaseResponse[])];
-    return { data: combined, error: response.error, status: 200 };
+    return { data: response.data || [], error: response.error, status: 200 };
   } catch (error: any) {
-    return { data: REAL_CASES as unknown as CaseResponse[], error: error.message, status: 500 };
+    return { data: [], error: error.message, status: 500 };
   }
 }
 
 export async function getCaseDetail(caseId: string): Promise<{ data: CaseResponse | null; error: string | null; status: number }> {
   try {
-    // Check if it's one of our mock cases first
-    const mockCase = REAL_CASES.find((c) => c.id === caseId);
-    if (mockCase) {
-      return { data: mockCase as unknown as CaseResponse, error: null, status: 200 };
-    }
-    
     const response = await apiFetch<CaseResponse>(`/cases/${caseId}`);
     return { data: response.data, error: response.error, status: 200 };
   } catch (error: any) {
@@ -236,6 +225,29 @@ export async function downloadEvidencePackage(caseId: string): Promise<void> {
   }
 }
 
+/** Download the dynamic-analysis packet capture. Throws with the server's message on failure. */
+export async function downloadPcap(caseId: string): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const response = await fetch(`${API_BASE_URL}/cases/${caseId}/dynamic/pcap`, { headers });
+  if (!response.ok) {
+    let detail = "Download failed";
+    try { detail = (await response.json()).detail || detail; } catch {}
+    throw new Error(detail);
+  }
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `apexx_${caseId.slice(0, 8)}_capture.pcap`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 // ---- IOC Export ----
 
 export function exportIOCsAsCSV(iocs: { type: string; value: string; context: string; confidence: number }[]): void {
@@ -277,6 +289,26 @@ export async function runDynamicAnalysis(caseId: string): Promise<any> {
     headers,
   });
   if (!response.ok) throw new Error("Failed to start dynamic analysis");
+  return response.json();
+}
+
+export async function getDynamicStatus(caseId: string): Promise<any> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const response = await fetch(`${API_BASE_URL}/cases/${caseId}/dynamic/status`, { headers });
+  if (!response.ok) throw new Error("Failed to get dynamic status");
+  return response.json();
+}
+
+export async function bootEmulator(): Promise<any> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const response = await fetch(`${API_BASE_URL}/cases/dynamic/emulator/boot`, { method: "POST", headers });
+  if (!response.ok) throw new Error("Failed to boot emulator");
   return response.json();
 }
 

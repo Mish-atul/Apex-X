@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from "react";
 import BehaviorTimeline from "@/components/BehaviorTimeline";
-import { REAL_TIMELINE_EVENTS } from "@/services/realData";
 import {
   runDynamicAnalysis,
+  getDynamicStatus,
+  bootEmulator,
+  downloadPcap,
   scanPentestDevices,
   startPentestSession,
   getPentestStatus,
@@ -11,22 +13,7 @@ import {
   uninstallPackageFromDevice,
 } from "@/services/api";
 import { useAuth } from "@/hooks/useAuth";
-
-const MOCK_APIS = [
-  { api: "DexClassLoader()", cls: "dalvik.system", risk: "CRITICAL" },
-  { api: "getLastKnownLocation()", cls: "android.location.LocationManager", risk: "HIGH" },
-  { api: "query(content://sms)", cls: "android.content.ContentResolver", risk: "CRITICAL" },
-  { api: "sendTextMessage()", cls: "android.telephony.SmsManager", risk: "CRITICAL" },
-  { api: "open(CAMERA_FACING_FRONT)", cls: "android.hardware.Camera", risk: "HIGH" },
-  { api: "setActiveAdmin()", cls: "android.app.admin.DevicePolicyManager", risk: "CRITICAL" },
-  { api: "getInstance(AES/CBC)", cls: "javax.crypto.Cipher", risk: "MEDIUM" },
-];
-
-const MOCK_NETWORK = [
-  { dest: "c2.malware-ops.ru", proto: "HTTPS", port: "443", size: "-", dir: "OUTBOUND" },
-  { dest: "91.234.99.18", proto: "HTTPS", port: "443", size: "-", dir: "OUTBOUND" },
-  { dest: "update-service.ddns.net", proto: "DNS", port: "53", size: "-", dir: "OUTBOUND" },
-];
+import { useFeedback } from "@/components/Feedback";
 
 interface DynamicTabProps {
   caseData: any;
@@ -66,10 +53,36 @@ function formatBytes(bytes: number): string {
 
 export default function DynamicTab({ caseData, analysisResults, isMockCase }: DynamicTabProps) {
   const { token } = useAuth();
+  const { toast, confirm } = useFeedback();
 
   // Emulator state
   const [isStarting, setIsStarting] = useState(false);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [dynStatus, setDynStatus] = useState<any>(null);
+  const [isBooting, setIsBooting] = useState(false);
+
+  const phaseStatus = Array.isArray(analysisResults)
+    ? analysisResults.find((r: any) => r.phase === "dynamic")?.result?.status
+    : undefined;
+
+  // Poll live dynamic status while analysis is queued/running; reload when it finishes
+  useEffect(() => {
+    if (isMockCase) return;
+    let wasRunning = phaseStatus === "running" || phaseStatus === "queued";
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const st = await getDynamicStatus(caseData.id);
+        if (stopped) return;
+        setDynStatus(st);
+        if (st.running) wasRunning = true;
+        else if (wasRunning) window.location.reload();
+      } catch {}
+    };
+    tick();
+    const iv = setInterval(tick, 3000);
+    return () => { stopped = true; clearInterval(iv); };
+  }, [caseData.id, isMockCase, phaseStatus]);
 
   // Mode selection state
   const [dynamicMode, setDynamicMode] = useState<DynamicMode>("select");
@@ -88,7 +101,6 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
     if (countdown === null) return;
 
     if (countdown <= 0) {
-      setCountdown(null);
       window.location.reload();
       return;
     }
@@ -124,24 +136,45 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
   // ── Emulator Handlers ──
 
   const handleRunEmulator = async () => {
-    const confirmed = window.confirm(
-      "📱 Before clicking OK:\n\n" +
-      "1. Double-click 'launch_emulator.bat' in the Apex-X folder\n" +
-      "2. Wait for the Android phone screen to appear\n" +
-      "3. Click OK here to install the APK on the phone\n\n" +
-      "The system will automatically launch the app and run automated UI exploration (Monkey) in the background.\n" +
-      "Data collection runs for 90 seconds. You can watch the emulator to see what it's doing!"
-    );
-    if (!confirmed) return;
-
     try {
       setIsStarting(true);
       await runDynamicAnalysis(caseData.id);
-      setCountdown(90);
+      setDynStatus({ running: true, stage: "booting_emulator", message: "Starting Android emulator" });
+      toast("info", "Dynamic analysis started", "The emulator is booting and the app will run automatically.");
     } catch (e) {
-      alert("Failed to start dynamic analysis: " + e);
+      toast("error", "Could not start dynamic analysis", String(e));
     } finally {
       setIsStarting(false);
+    }
+  };
+
+  const [isDownloadingPcap, setIsDownloadingPcap] = useState(false);
+  const handleDownloadPcap = async () => {
+    try {
+      setIsDownloadingPcap(true);
+      await downloadPcap(caseData.id);
+      toast("success", "Packet capture downloaded", "Open the .pcap file in Wireshark for full traffic analysis.");
+    } catch (e: any) {
+      toast("error", "PCAP not available", e?.message || String(e));
+    } finally {
+      setIsDownloadingPcap(false);
+    }
+  };
+
+  const handleBootEmulator = async () => {
+    try {
+      setIsBooting(true);
+      toast("info", "Booting emulator", "This can take up to a minute on first start.");
+      for (let i = 0; i < 100; i++) {
+        const st = await bootEmulator();
+        if (st.booted) break;
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      await handleScanDevices();
+    } catch (e) {
+      toast("error", "Failed to boot emulator", String(e));
+    } finally {
+      setIsBooting(false);
     }
   };
 
@@ -154,13 +187,14 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
       const devicesList = result.devices || [];
       setPentestDevices(devicesList);
       if (devicesList.length === 0) {
-        alert("No physical Android devices detected.\n\nMake sure:\n1. Phone is connected via USB\n2. USB Debugging is enabled in Developer Options\n3. You've authorized this computer on the phone");
+        toast("warning", "No devices detected",
+          "Click “Boot Emulator” to use a virtual device (no USB needed), or connect a phone with USB debugging enabled.");
       } else {
-        // Auto-select first device
         setSelectedDevice(devicesList[0].serial);
+        toast("success", `${devicesList.length} device(s) found`);
       }
     } catch (e) {
-      alert("Failed to scan devices: " + e);
+      toast("error", "Device scan failed", String(e));
     } finally {
       setIsScanning(false);
     }
@@ -168,13 +202,14 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
 
   const handleStartPentest = async () => {
     if (!selectedDevice) {
-      alert("Please select a device first");
+      toast("warning", "Select a device first");
       return;
     }
 
     const deviceObj = pentestDevices.find(d => d.serial === selectedDevice);
     if (deviceObj && (deviceObj as any).status === "unauthorized") {
-      alert("⚠️ This device is Unauthorized!\n\nPlease unlock your phone screen and tap 'Allow USB Debugging / Always allow from this computer', then click Scan USB Devices again.");
+      toast("warning", "Device unauthorized",
+        "Unlock the phone and allow USB debugging for this computer, then scan again.");
       return;
     }
 
@@ -182,43 +217,42 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
       setIsStarting(true);
       await startPentestSession(caseData.id, selectedDevice);
       setIsPentestActive(true);
+      toast("success", "Monitoring session started");
     } catch (e) {
-      alert("Failed to start monitoring session: " + e);
+      toast("error", "Could not start monitoring", String(e));
     } finally {
       setIsStarting(false);
     }
   };
 
   const handleStopPentest = async () => {
-    const confirmed = window.confirm(
-      "⏹ Stop monitoring and generate the analysis report?\n\n" +
-      "This will:\n" +
-      "• Stop PCAPdroid network capture\n" +
-      "• Detect all child/dropper APKs installed\n" +
-      "• Run static analysis on any child APKs found\n" +
-      "• Enrich with VirusTotal intelligence\n" +
-      "• Generate the full dynamic analysis report"
-    );
+    const confirmed = await confirm({
+      title: "Stop monitoring and generate report?",
+      message: "This stops network capture, detects any dropped child APKs, runs static analysis on them, enriches with threat intelligence, and compiles the full dynamic report.",
+      confirmLabel: "Stop & generate",
+    });
     if (!confirmed) return;
 
     try {
       setIsStopping(true);
       await stopPentestSession(caseData.id);
-      // Wait for backend to finalize
       setCountdown(10);
       setIsPentestActive(false);
+      toast("info", "Finalising report", "Results will appear in a few seconds.");
     } catch (e) {
-      alert("Failed to stop session: " + e);
+      toast("error", "Could not stop session", String(e));
     } finally {
       setIsStopping(false);
     }
   };
 
   const handleCleanDevice = async () => {
-    const confirmed = window.confirm(
-      "🧹 Clean Phone / Uninstall Test Apps?\n\n" +
-      "This will force-stop and completely uninstall the target APK and any dropped child APKs from your connected phone."
-    );
+    const confirmed = await confirm({
+      title: "Uninstall test apps from device?",
+      message: "This force-stops and removes the target APK and any dropped child APKs from the connected device.",
+      confirmLabel: "Clean device",
+      tone: "danger",
+    });
     if (!confirmed) return;
 
     try {
@@ -226,12 +260,12 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
       const res = await cleanPentestDevice(caseData.id, selectedDevice || undefined);
       const uninstalled = res.uninstalled_packages || [];
       if (uninstalled.length > 0) {
-        alert(`✅ Successfully uninstalled from phone:\n\n• ${uninstalled.join("\n• ")}`);
+        toast("success", "Device cleaned", uninstalled.map((p: string) => `• ${p}`).join("\n"));
       } else {
-        alert("ℹ️ Phone is clean! No test packages currently installed.");
+        toast("info", "Device already clean", "No test packages are currently installed.");
       }
     } catch (e: any) {
-      alert("Failed to clean device: " + (e?.message || e));
+      toast("error", "Clean failed", e?.message || String(e));
     } finally {
       setIsCleaning(false);
     }
@@ -240,17 +274,23 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
   const [uninstallingPkg, setUninstallingPkg] = useState<string | null>(null);
 
   const handleUninstallSingle = async (pkgName: string) => {
-    if (!confirm(`Are you sure you want to completely uninstall '${pkgName}' from the connected device?`)) return;
+    const ok = await confirm({
+      title: "Uninstall package?",
+      message: `Completely remove “${pkgName}” from the connected device.`,
+      confirmLabel: "Uninstall",
+      tone: "danger",
+    });
+    if (!ok) return;
     setUninstallingPkg(pkgName);
     try {
       const res = await uninstallPackageFromDevice(caseData?.id, pkgName, selectedDevice || undefined);
       if (res.success) {
-        alert(`✅ Application '${pkgName}' was successfully removed from the device.`);
+        toast("success", "Package removed", `“${pkgName}” was uninstalled from the device.`);
       } else {
-        alert(`Uninstall result for '${pkgName}': ${res.error || 'Triggered on device'}`);
+        toast("info", "Uninstall requested", res.error || "Triggered on device.");
       }
     } catch (e: any) {
-      alert(`Error uninstalling package: ${e.message}`);
+      toast("error", "Uninstall failed", e.message);
     } finally {
       setUninstallingPkg(null);
     }
@@ -304,7 +344,7 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
 
   const timelineEventsToUse = (dynamicEvents && dynamicEvents.length > 0)
     ? dynamicEvents
-    : (isMockCase ? REAL_TIMELINE_EVENTS : []);
+    : [];
 
   // Process Suspicious APIs
   const dynamicApis = rawEvents.reduce((acc: any[], evt: any) => {
@@ -320,7 +360,7 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
     return acc;
   }, []);
 
-  const apisToUse = (dynamicApis && dynamicApis.length > 0) ? dynamicApis : (isMockCase ? MOCK_APIS : []);
+  const apisToUse = (dynamicApis && dynamicApis.length > 0) ? dynamicApis : [];
 
   // Process Network Connections
   const dynamicConnections = dynamicResult?.network_activity?.map((conn: any) => ({
@@ -342,7 +382,7 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
     fridaData: conn.frida_data || null,
   })) || [];
 
-  const networkToUse = (dynamicConnections && dynamicConnections.length > 0) ? dynamicConnections : (isMockCase ? MOCK_NETWORK : []);
+  const networkToUse = (dynamicConnections && dynamicConnections.length > 0) ? dynamicConnections : [];
 
   // Extract pentest-specific data
   const pentestData = dynamicResult?.pentest_data || null;
@@ -352,7 +392,7 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
   const [packageFilter, setPackageFilter] = useState<string>("all");
 
   // Extract unique packages from events for filtering
-  const uniquePackages = React.useMemo(() => {
+  const uniquePackages = (() => {
     const pkgs = new Set<string>();
     rawEvents.forEach((evt: any) => {
       if (evt.class_name) pkgs.add(evt.class_name);
@@ -362,7 +402,7 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
       if (conn.attributedPackage) pkgs.add(conn.attributedPackage);
     });
     return Array.from(pkgs).filter(p => p && p.length > 2);
-  }, [rawEvents, dynamicConnections]);
+  })();
 
   // Apply package filter
   const filteredTimeline = packageFilter === "all"
@@ -383,7 +423,8 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
     ? "Manual Pentest"
     : dynamicResult?.mode === "heuristic"
     ? "Heuristic (No VM)"
-    : "Mock Data";
+    : "Not run";
+  const dynRunning = !!dynStatus?.running || phaseStatus === "running" || phaseStatus === "queued";
 
   return (
     <div className="space-y-4">
@@ -398,12 +439,12 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
       </div>
 
       {/* ── Mode Selector (only when no results yet and not in active session) ── */}
-      {!isMockCase && !hasRealDynamic && !isPentestActive && dynamicMode === "select" && (
+      {!isMockCase && !hasRealDynamic && !dynRunning && !isPentestActive && dynamicMode === "select" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Emulator Option */}
           <button
             onClick={() => { setDynamicMode("emulator"); handleRunEmulator(); }}
-            disabled={isStarting || countdown !== null}
+            disabled={isStarting || dynRunning}
             className="bg-panel border-2 border-border-subtle hover:border-blue-500/50 p-6 text-left transition-all group cursor-pointer"
           >
             <div className="flex items-center space-x-3 mb-3">
@@ -443,7 +484,7 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
               </div>
             </div>
             <p className="text-sm text-primary/60 leading-relaxed">
-              Connect a physical phone via USB. You manually install and interact with the APK while the system monitors
+              Use the built-in emulator (no USB) or a physical phone. You manually install and interact with the APK while the system monitors
               all activities. <strong className="text-red-400">Detects hidden child/dropper APKs</strong> that install in the background.
             </p>
             <div className="mt-4 flex items-center space-x-2 text-xs font-mono text-primary/40">
@@ -457,15 +498,115 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
         </div>
       )}
 
-      {/* ── Emulator Countdown (when emulator is running) ── */}
-      {!isMockCase && !hasRealDynamic && dynamicMode === "emulator" && countdown !== null && (
+      {/* ── Live emulator analysis status ── */}
+      {!isMockCase && dynRunning && (
         <div className="bg-panel border border-blue-500/30 p-6 text-center">
           <svg className="animate-spin mx-auto h-8 w-8 text-blue-400 mb-3" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
           <p className="text-lg font-semibold text-blue-400">Emulator Analysis Running</p>
-          <p className="text-sm text-primary/60 mt-1">Collecting runtime data... Refreshing in <strong>{countdown}s</strong></p>
+          <p className="text-sm text-primary/60 mt-1">
+            {dynStatus?.message || "Queued — waiting for the emulator"}
+          </p>
+          <p className="text-xs text-primary/40 mt-2 font-mono">
+            Results load automatically when finished (typically 2–4 minutes including emulator boot).
+          </p>
+        </div>
+      )}
+
+      {/* ── Re-run on emulator ── */}
+      {!isMockCase && hasRealDynamic && !dynRunning && !isPentestActive && (
+        <div className="flex justify-between items-center bg-panel border border-border-subtle p-3">
+          <span className="text-xs font-mono text-primary/60">
+            Mode: <strong>{modeLabel}</strong>
+            {dynamicResult?.device ? ` • ${dynamicResult.device}` : ""}
+            {dynamicResult?.duration_seconds ? ` • ${Math.round(dynamicResult.duration_seconds)}s` : ""}
+            {dynamicResult?.dropped_packages?.length ? ` • ${dynamicResult.dropped_packages.length} dropped package(s)` : ""}
+          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={handleDownloadPcap}
+              disabled={isDownloadingPcap}
+              className="px-3 py-1.5 text-xs font-medium border border-border-subtle bg-panel hover:bg-surface disabled:opacity-50"
+              title="Packet capture recorded during the run — open in Wireshark"
+            >
+              {isDownloadingPcap ? "Preparing..." : "⬇ Download PCAP"}
+            </button>
+            <button
+              onClick={handleRunEmulator}
+              disabled={isStarting}
+              className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"
+            >
+              {isStarting ? "Starting..." : "↻ Re-run on Emulator"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Child / dropped apps observed during emulator run ── */}
+      {dynamicResult?.mode === "emulator" && (
+        <div className="bg-panel border border-border-subtle p-4">
+          <div className="flex items-center justify-between mb-3 border-b border-border-subtle pb-2">
+            <h3 className="font-display font-semibold text-sm">Child Apps Installed During Run</h3>
+            <span className={`text-xs font-mono px-2 py-0.5 rounded ${
+              (dynamicResult.child_apps?.length || 0) > 0 ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>
+              {(dynamicResult.child_apps?.length || 0) > 0
+                ? `${dynamicResult.child_apps.length} dropped`
+                : "None detected"}
+            </span>
+          </div>
+          {(dynamicResult.child_apps?.length || 0) === 0 ? (
+            <p className="text-xs text-text-muted">
+              The app did not install any other package while it ran. Every installed package is tracked
+              automatically, including its network connections, logs and permission use.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {dynamicResult.child_apps.map((child: any) => (
+                <div key={child.package} className="border border-red-200 bg-red-50/40 rounded-md p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-mono text-sm font-semibold text-text">{child.package}</span>
+                      {child.app_name && <span className="text-xs text-text-muted ml-2">({child.app_name})</span>}
+                    </div>
+                    <span className="text-xs font-mono text-text-muted">uid {child.uid ?? "?"} · detected {child.detected_at?.slice(11, 19)}</span>
+                  </div>
+                  {child.sha256 && <p className="text-[11px] font-mono text-text-muted break-all mt-1">SHA-256: {child.sha256}</p>}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2 text-xs">
+                    <div><span className="text-text-muted block">Connections</span><strong>{child.network?.length || 0}</strong></div>
+                    <div><span className="text-text-muted block">Permissions</span><strong>{child.permissions?.length || 0}</strong></div>
+                    <div><span className="text-text-muted block">Dangerous</span><strong className="text-red-600">{child.dangerous_permissions?.length || 0}</strong></div>
+                    <div><span className="text-text-muted block">Runtime ops used</span><strong>{child.runtime_ops?.length || 0}</strong></div>
+                  </div>
+                  {child.network?.length > 0 && (
+                    <div className="mt-2">
+                      <span className="text-xs text-text-muted">Contacted:</span>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {child.network.slice(0, 12).map((n: any, i: number) => (
+                          <span key={i} className="text-[11px] font-mono bg-white border border-border-subtle px-1.5 py-0.5 rounded">
+                            {n.destination}:{n.port}{n.ip && n.destination !== n.ip ? ` (${n.ip})` : ""}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {child.dangerous_permissions?.length > 0 && (
+                    <p className="text-[11px] text-red-700 mt-2 font-mono break-words">
+                      {child.dangerous_permissions.map((p: string) => p.split(".").pop()).join(", ")}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!isMockCase && dynamicResult?.mode === "heuristic" && !dynRunning && (
+        <div className="bg-amber-50 border border-amber-300 p-3 text-sm text-amber-800">
+          No emulator could be started, so these results come from a code-level heuristic scan, not real execution.
+          {dynamicResult?.errors?.length ? <span className="block text-xs font-mono mt-1">{dynamicResult.errors.join(" | ")}</span> : null}
         </div>
       )}
 
@@ -477,7 +618,7 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
               <span className="text-2xl">📱</span>
               <div>
                 <h3 className="font-display font-bold text-lg text-primary">Manual Penetration Testing</h3>
-                <p className="text-xs text-primary/50">Connect your physical device via USB</p>
+                <p className="text-xs text-primary/50">Use the built-in Android emulator, or a phone connected via USB</p>
               </div>
             </div>
             {!isPentestActive && (
@@ -499,7 +640,15 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
                   disabled={isScanning}
                   className="px-4 py-2 bg-gradient-to-r from-red-500 to-orange-600 hover:from-red-600 hover:to-orange-700 text-white rounded-lg shadow-lg shadow-red-500/25 transition-all font-medium text-sm disabled:opacity-50"
                 >
-                  {isScanning ? "Scanning..." : "🔍 Scan USB Devices"}
+                  {isScanning ? "Scanning..." : "🔍 Scan Devices"}
+                </button>
+                <button
+                  onClick={handleBootEmulator}
+                  disabled={isBooting}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all font-medium text-sm disabled:opacity-50"
+                  title="Start the Android emulator — no phone or USB cable required"
+                >
+                  {isBooting ? "Booting emulator..." : "🖥️ Boot Emulator"}
                 </button>
                 <button
                   onClick={handleCleanDevice}
@@ -538,10 +687,10 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
 
               <div className="bg-canvas/50 border border-border-subtle p-3 rounded-lg">
                 <p className="text-xs text-primary/50 leading-relaxed">
-                  <strong className="text-primary/70">How it works:</strong> Click "Start Monitoring" to begin capturing all device activity.
-                  Then manually install and interact with the suspicious APK on the phone.
-                  The system will detect any hidden child APKs, capture network traffic via PCAPdroid,
-                  and monitor all runtime behavior. Click "Stop" when you're done to generate the full report.
+                  <strong className="text-primary/70">How it works:</strong> Click &ldquo;Start Monitoring&rdquo; to begin capturing all device activity.
+                  Then install and interact with the suspicious APK on the device (emulator or phone).
+                  The system detects hidden child APKs, captures network traffic, and monitors runtime
+                  behaviour. Click &ldquo;Stop&rdquo; when you are done to generate the full report.
                 </p>
               </div>
             </div>
@@ -778,92 +927,216 @@ export default function DynamicTab({ caseData, analysisResults, isMockCase }: Dy
         </div>
       )}
 
-      {/* ── UPI Payment & Credential Theft Forensic Analysis ── */}
-      <div className="bg-panel border-2 border-amber-500/30 p-5 rounded-lg">
-        <div className="flex items-center justify-between border-b border-amber-500/20 pb-3 mb-4">
-          <div className="flex items-center space-x-2">
-            <span className="text-2xl">💳</span>
-            <div>
-              <h3 className="font-display font-bold text-base text-amber-400">
-                UPI Payment Interception & Credential Theft Forensics
-              </h3>
-              <p className="text-xs text-primary/60">
-                How the malicious application captures UPI PINs, bank details, and pushes them to C2 infrastructure
-              </p>
-            </div>
-          </div>
-          <span className="px-2.5 py-1 text-xs font-mono font-semibold bg-red-500/10 text-red-400 border border-red-500/20 rounded">
-            CRITICAL FRAUD VECTOR
-          </span>
-        </div>
+      {/* ── Data-Driven Credential Theft Forensic Analysis ── */}
+      {(() => {
+        // Derive UPI/financial fraud indicators from actual analysis data
+        const upiKeywords = ["upi", "payment", "pin", "otp", "bank", "paytm", "phonepe", "gpay", "npci", "vpa", "imps", "neft"];
+        const overlayPerms = ["android.permission.SYSTEM_ALERT_WINDOW", "SYSTEM_ALERT_WINDOW"];
+        const a11yPerms = ["android.permission.BIND_ACCESSIBILITY_SERVICE", "BIND_ACCESSIBILITY_SERVICE"];
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          {/* Box 1: Attack Vector */}
-          <div className="bg-canvas border border-border-subtle p-3 rounded">
-            <div className="text-[11px] font-mono text-primary/50 uppercase tracking-wider mb-1">
-              1. Fake Screen / Overlay
-            </div>
-            <div className="text-sm font-semibold text-primary mb-1">
-              Phishing Window Overlay
-            </div>
-            <p className="text-xs text-primary/70 leading-relaxed">
-              Child APK draws a full-screen window mimicking an NPCI / Bank UPI gateway using <code className="text-amber-400 text-[11px]">SYSTEM_ALERT_WINDOW</code> or <code className="text-amber-400 text-[11px]">AccessibilityService</code>.
-            </p>
-          </div>
+        // 1. Check events for UPI-related API calls
+        const upiEvents = rawEvents.filter((evt: any) => {
+          const text = `${evt.api_call || ""} ${evt.description || ""} ${evt.class_name || ""}`.toLowerCase();
+          return upiKeywords.some(kw => text.includes(kw));
+        });
 
-          {/* Box 2: PIN Capture */}
-          <div className="bg-canvas border border-border-subtle p-3 rounded">
-            <div className="text-[11px] font-mono text-primary/50 uppercase tracking-wider mb-1">
-              2. Capture Mechanism
-            </div>
-            <div className="text-sm font-semibold text-primary mb-1">
-              Keystroke & EditText Hooking
-            </div>
-            <p className="text-xs text-primary/70 leading-relaxed">
-              Monitors <code className="text-amber-400 text-[11px]">EditText.getText()</code> and <code className="text-amber-400 text-[11px]">TYPE_VIEW_TEXT_CHANGED</code> events to intercept 4-6 digit numeric UPI security PINs and OTPs in cleartext.
-            </p>
-          </div>
+        // 2. Check events for overlay/accessibility abuse
+        const overlayEvents = rawEvents.filter((evt: any) => {
+          const text = `${evt.api_call || ""} ${evt.description || ""} ${evt.class_name || ""}`.toLowerCase();
+          return text.includes("system_alert") || text.includes("overlay") || text.includes("accessibility") || text.includes("edittext") || text.includes("keylog");
+        });
 
-          {/* Box 3: API Push */}
-          <div className="bg-canvas border border-border-subtle p-3 rounded">
-            <div className="text-[11px] font-mono text-primary/50 uppercase tracking-wider mb-1">
-              3. Exfiltration API Call
-            </div>
-            <div className="text-sm font-semibold text-primary mb-1">
-              HTTP POST to C2 Server
-            </div>
-            <p className="text-xs text-primary/70 leading-relaxed">
-              Exfiltrates captured credentials via encrypted/cleartext HTTP API calls or Telegram Bot APIs (<code className="text-amber-400 text-[11px]">sendMessage</code>) attributed to the child APK process.
-            </p>
-          </div>
-        </div>
+        // 3. Check permissions from static analysis for overlay/a11y
+        const staticPerms: string[] = analysisResults?.static?.permissions?.map((p: any) => typeof p === "string" ? p : p.permission || p.name || "") || [];
+        const hasOverlayPerm = staticPerms.some(p => overlayPerms.some(op => p.includes(op)));
+        const hasA11yPerm = staticPerms.some(p => a11yPerms.some(ap => p.includes(ap)));
 
-        {/* Technical Exfiltration Details */}
-        <div className="bg-canvas border border-border-subtle p-4 rounded text-xs font-mono space-y-2">
-          <div className="flex justify-between items-center text-primary/70 border-b border-border-subtle pb-2">
-            <span>📡 Identified Exfiltration Target</span>
-            <span className="text-orange-400">Attributed to: Child APK</span>
+        // 4. Identify suspicious outbound connections (C2 exfiltration targets)
+        const exfilConnections = filteredNetwork.filter((conn: any) => {
+          const port = parseInt(conn.port) || 0;
+          return conn.dir === "OUTBOUND" && (port === 443 || port === 8443 || port === 80 || port === 8080);
+        });
+
+        // 5. Compute total data transferred
+        const totalBytesSent = filteredNetwork.reduce((sum: number, c: any) => sum + (c.bytesSent || 0), 0);
+        const totalBytesRecv = filteredNetwork.reduce((sum: number, c: any) => sum + (c.bytesRecv || 0), 0);
+        const formatBytes = (b: number) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b/1024).toFixed(1)} KB` : `${(b/1048576).toFixed(2)} MB`;
+
+        // 6. Extract Frida hook data if available
+        const fridaData = pentestData?.frida_data || null;
+        const fridaUsed = pentestData?.frida_used || false;
+
+        // 7. Check for Telegram bot API or known exfil patterns in connections
+        const telegramConns = filteredNetwork.filter((conn: any) =>
+          (conn.dest || conn.hostname || "").toLowerCase().includes("telegram") ||
+          (conn.dest || conn.hostname || "").toLowerCase().includes("api.telegram")
+        );
+
+        // Only render this panel if there's actual evidence
+        const hasFinancialIndicators = upiEvents.length > 0 || hasOverlayPerm || hasA11yPerm || overlayEvents.length > 0;
+        const hasExfilEvidence = exfilConnections.length > 0 || telegramConns.length > 0;
+        const hasAnyEvidence = hasFinancialIndicators || hasExfilEvidence || fridaUsed;
+
+        if (!hasAnyEvidence) return null;
+
+        return (
+          <div className="bg-panel border-2 border-amber-500/30 p-5 rounded-lg">
+            <div className="flex items-center justify-between border-b border-amber-500/20 pb-3 mb-4">
+              <div className="flex items-center space-x-2">
+                <span className="text-2xl">💳</span>
+                <div>
+                  <h3 className="font-display font-bold text-base text-amber-400">
+                    Credential Theft & Exfiltration Forensics
+                  </h3>
+                  <p className="text-xs text-primary/60">
+                    Evidence derived from {rawEvents.length} captured events, {filteredNetwork.length} network connections
+                    {fridaUsed ? ", and Frida instrumentation" : ""}
+                  </p>
+                </div>
+              </div>
+              <span className={`px-2.5 py-1 text-xs font-mono font-semibold rounded ${
+                hasFinancialIndicators && hasExfilEvidence
+                  ? "bg-red-500/10 text-red-400 border border-red-500/20"
+                  : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+              }`}>
+                {hasFinancialIndicators && hasExfilEvidence ? "CRITICAL FRAUD VECTOR" : "SUSPICIOUS INDICATORS"}
+              </span>
+            </div>
+
+            {/* Evidence Grid - dynamically populated */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              {/* Box 1: Overlay / Phishing Evidence */}
+              <div className="bg-canvas border border-border-subtle p-3 rounded">
+                <div className="text-[11px] font-mono text-primary/50 uppercase tracking-wider mb-1">
+                  1. Overlay / Screen Hijack
+                </div>
+                <div className="text-sm font-semibold text-primary mb-1">
+                  {hasOverlayPerm || overlayEvents.length > 0 ? "⚠ Evidence Found" : "✓ No Evidence"}
+                </div>
+                <div className="text-xs text-primary/70 leading-relaxed space-y-1">
+                  {hasOverlayPerm && (
+                    <p>• <code className="text-amber-400 text-[11px]">SYSTEM_ALERT_WINDOW</code> permission declared</p>
+                  )}
+                  {hasA11yPerm && (
+                    <p>• <code className="text-amber-400 text-[11px]">BIND_ACCESSIBILITY_SERVICE</code> requested</p>
+                  )}
+                  {overlayEvents.length > 0 && (
+                    <p>• {overlayEvents.length} overlay/accessibility event(s) captured at runtime</p>
+                  )}
+                  {!hasOverlayPerm && !hasA11yPerm && overlayEvents.length === 0 && (
+                    <p className="italic text-primary/50">No overlay or accessibility abuse detected in this session</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Box 2: Input Capture Evidence */}
+              <div className="bg-canvas border border-border-subtle p-3 rounded">
+                <div className="text-[11px] font-mono text-primary/50 uppercase tracking-wider mb-1">
+                  2. Input / Credential Capture
+                </div>
+                <div className="text-sm font-semibold text-primary mb-1">
+                  {upiEvents.length > 0 ? `⚠ ${upiEvents.length} UPI Event(s)` : "✓ No UPI Events"}
+                </div>
+                <div className="text-xs text-primary/70 leading-relaxed space-y-1">
+                  {upiEvents.length > 0 ? (
+                    upiEvents.slice(0, 3).map((evt: any, i: number) => (
+                      <p key={i}>• <code className="text-amber-400 text-[11px]">{evt.api_call || "API call"}</code>
+                        {evt.class_name && <span className="text-primary/50"> in {evt.class_name.split(".").pop()}</span>}
+                      </p>
+                    ))
+                  ) : (
+                    <p className="italic text-primary/50">No UPI/payment related API calls captured. Try longer session or trigger payment flow on device.</p>
+                  )}
+                  {upiEvents.length > 3 && (
+                    <p className="text-primary/50">...and {upiEvents.length - 3} more</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Box 3: Exfiltration Evidence */}
+              <div className="bg-canvas border border-border-subtle p-3 rounded">
+                <div className="text-[11px] font-mono text-primary/50 uppercase tracking-wider mb-1">
+                  3. Data Exfiltration
+                </div>
+                <div className="text-sm font-semibold text-primary mb-1">
+                  {exfilConnections.length > 0 ? `⚠ ${exfilConnections.length} Outbound Endpoint(s)` : "✓ No Outbound Traffic"}
+                </div>
+                <div className="text-xs text-primary/70 leading-relaxed space-y-1">
+                  {exfilConnections.slice(0, 3).map((conn: any, i: number) => (
+                    <p key={i}>
+                      • <code className="text-red-400 text-[11px]">{conn.dest || conn.ip}:{conn.port}</code>
+                      <span className="text-primary/50"> ({conn.proto})</span>
+                      {conn.apkType === "child" && <span className="text-orange-400 ml-1">[Child APK]</span>}
+                    </p>
+                  ))}
+                  {telegramConns.length > 0 && (
+                    <p>• <code className="text-red-400 text-[11px]">Telegram Bot API</code> connection detected</p>
+                  )}
+                  {exfilConnections.length === 0 && telegramConns.length === 0 && (
+                    <p className="italic text-primary/50">No suspicious outbound endpoints captured</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Network Exfiltration Details — from real captured data */}
+            {exfilConnections.length > 0 && (
+              <div className="bg-canvas border border-border-subtle p-4 rounded text-xs font-mono space-y-2">
+                <div className="flex justify-between items-center text-primary/70 border-b border-border-subtle pb-2">
+                  <span>📡 Captured Exfiltration Targets ({exfilConnections.length})</span>
+                  <span className="text-green-400">
+                    Total: ↑ {formatBytes(totalBytesSent)} sent · ↓ {formatBytes(totalBytesRecv)} received
+                  </span>
+                </div>
+                <div className="space-y-1.5 pt-1">
+                  {exfilConnections.map((conn: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between py-1 border-b border-border-subtle/50 last:border-0">
+                      <div className="flex items-center space-x-3">
+                        <span className={`px-1.5 py-0.5 text-[10px] rounded ${
+                          conn.apkType === "child" ? "bg-orange-500/10 text-orange-400 border border-orange-500/20"
+                            : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                        }`}>
+                          {conn.apkType === "child" ? "📦 Child APK" : "📱 Parent APK"}
+                        </span>
+                        <span className="text-red-400">{conn.dest || conn.ip}:{conn.port}</span>
+                        <span className="text-primary/50">{conn.proto}</span>
+                        {conn.attributedPackage && (
+                          <span className="text-cyan-400/70 text-[10px]">pkg: {conn.attributedPackage}</span>
+                        )}
+                      </div>
+                      <div className="text-primary/50">
+                        {conn.bytesSent > 0 && <span>↑ {formatBytes(conn.bytesSent)}</span>}
+                        {conn.bytesRecv > 0 && <span className="ml-2">↓ {formatBytes(conn.bytesRecv)}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Frida Instrumentation Status */}
+            <div className="mt-3 bg-canvas border border-border-subtle p-3 rounded text-xs font-mono">
+              <div className="flex items-center justify-between">
+                <span className="text-primary/50">Interception Layer:</span>
+                <span className={fridaUsed ? "text-purple-400 font-bold" : "text-primary/50 italic"}>
+                  {fridaUsed ? "🔓 Frida SSL Bypass + TrustManager Hook Active" : "⚡ Frida not active this session — enable for TLS interception"}
+                </span>
+              </div>
+              {fridaData && typeof fridaData === "object" && Object.keys(fridaData).length > 0 && (
+                <div className="mt-2 pt-2 border-t border-border-subtle/50">
+                  <span className="text-primary/50 block mb-1">Frida Captured Data:</span>
+                  {Object.entries(fridaData).slice(0, 5).map(([key, val]) => (
+                    <div key={key} className="flex items-center space-x-2 py-0.5">
+                      <span className="text-cyan-400">{key}:</span>
+                      <span className="text-primary/80 truncate max-w-md">{typeof val === "string" ? val : JSON.stringify(val)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-            <div>
-              <span className="text-primary/50">API Endpoint: </span>
-              <span className="text-red-400 font-bold">POST https://103.250.147.228:8443/api/v1/collect_upi</span>
-            </div>
-            <div>
-              <span className="text-primary/50">Data Size Transferred: </span>
-              <span className="text-green-400 font-bold">~1.4 KB (Encrypted JSON Payload)</span>
-            </div>
-            <div>
-              <span className="text-primary/50">Captured Fields: </span>
-              <span className="text-primary/80">device_id, upi_vpa, upi_pin, bank_name, sms_otp</span>
-            </div>
-            <div>
-              <span className="text-primary/50">Interception Layer: </span>
-              <span className="text-purple-400 font-bold">Frida SSL Bypass + TrustManager Hook Active</span>
-            </div>
-          </div>
-        </div>
-      </div>
+        );
+      })()}
 
 
       {/* Behavioral Event Timeline */}

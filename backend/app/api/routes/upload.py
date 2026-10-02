@@ -3,7 +3,10 @@ from sqlalchemy.orm import Session
 from app.api import dependencies
 from app.api.middleware.rbac import get_current_user
 from app.services.hash_service import calculate_sha256, append_to_manifest
-from app.utils.file_utils import is_valid_apk, save_upload_file
+from app.utils.file_utils import (
+    is_valid_apk, save_upload_file, is_allowed_upload, is_bundle_filename,
+    is_valid_bundle, extract_bundle,
+)
 from app.services.audit_service import log_action
 from app.models.database import Case, PhaseResult, User
 from app.models.schemas import Case as CaseSchema
@@ -17,8 +20,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Data directory for local storage
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "cases")
+# Data directory for local storage (single source of truth)
+from app.config import settings as _settings
+DATA_DIR = _settings.CASES_DIR
+os.makedirs(DATA_DIR, exist_ok=True)
 
 
 def _run_analysis_sync(case_id: str, apk_name: str, apk_hash: str):
@@ -41,7 +46,8 @@ def _run_analysis_sync(case_id: str, apk_name: str, apk_hash: str):
         db.commit()
 
         case_dir = os.path.join(DATA_DIR, str(case_id))
-        apk_path = os.path.join(case_dir, apk_name)
+        from app.utils.file_utils import resolve_analysis_apk
+        apk_path = resolve_analysis_apk(case_dir, apk_name)
 
         if not os.path.exists(apk_path):
             logger.error(f"APK not found: {apk_path}")
@@ -79,12 +85,11 @@ def _run_analysis_sync(case_id: str, apk_name: str, apk_hash: str):
         )
         db.add(phase_record)
         
-        # Dynamic analysis is now strictly on-demand via the UI button
-        # We initialize an empty placeholder phase so the UI knows it exists
+        # Dynamic analysis runs automatically on the emulator once static completes
         dynamic_phase = PhaseResult(
             case_id=case_uuid,
             phase="dynamic",
-            result={"status": "pending", "message": "Awaiting manual Visual VM execution"},
+            result={"status": "queued", "mode": "emulator", "message": "Queued for emulator execution"},
             risk_score=0,
             completed_at=datetime.utcnow()
         )
@@ -120,6 +125,10 @@ def _run_analysis_sync(case_id: str, apk_name: str, apk_hash: str):
         db.commit()
         logger.info(f"Analysis completed for case {case_id}, risk_score={static_result.get('risk_score')}")
 
+        if os.environ.get("APEX_AUTO_DYNAMIC", "1") == "1":
+            from app.services.dynamic_service import start_dynamic_in_background
+            start_dynamic_in_background(str(case_id), apk_name)
+
     except Exception as e:
         logger.error(f"Analysis failed for case {case_id}: {e}")
         db.rollback()
@@ -137,11 +146,13 @@ async def upload_apk(
     db: Session = Depends(dependencies.get_db),
     current_user: User = Depends(get_current_user)
 ):
-    if not file.filename.endswith(".apk"):
+    file.filename = os.path.basename(file.filename or "")
+    if not is_allowed_upload(file.filename):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid file type. Only .apk files are allowed."
+            detail="Invalid file type. Allowed: .apk, .xapk, .apks, .apkm."
         )
+    is_bundle = is_bundle_filename(file.filename)
     
     # 1. Hash the uploaded file
     await file.seek(0)
@@ -151,8 +162,27 @@ async def upload_apk(
     # Check if a case with this hash already exists
     existing_case = db.query(Case).filter(Case.apk_hash == apk_hash).first()
     if existing_case:
-        # If case exists but analysis hasn't run, trigger it now
-        if existing_case.status not in ("completed", "analyzing"):
+        # Check if the APK file actually exists in the case directory, if not re-save it
+        case_dir = os.path.join(DATA_DIR, str(existing_case.id))
+        apk_path = os.path.join(case_dir, existing_case.apk_name)
+        if not os.path.exists(apk_path):
+            os.makedirs(case_dir, exist_ok=True)
+            temp_path = os.path.join(DATA_DIR, "temp", file.filename)
+            if save_upload_file(file, temp_path):
+                if is_bundle:
+                    bundle_path = os.path.join(case_dir, file.filename)
+                    shutil.move(temp_path, bundle_path)
+                    try:
+                        extract_bundle(bundle_path, case_dir)
+                    except Exception as e:
+                        logger.error(f"Re-extracting bundle failed: {e}")
+                else:
+                    shutil.move(temp_path, apk_path)
+
+        # If case exists but analysis is not completed (e.g. was interrupted, failed, or stuck), re-trigger
+        if existing_case.status != "completed":
+            existing_case.status = "analyzing"
+            db.commit()
             thread = threading.Thread(
                 target=_run_analysis_sync,
                 args=(str(existing_case.id), existing_case.apk_name, apk_hash),
@@ -166,7 +196,11 @@ async def upload_apk(
     if not save_upload_file(file, temp_path):
         raise HTTPException(status_code=500, detail="Failed to save uploaded file temporarily.")
         
-    if not is_valid_apk(temp_path):
+    if is_bundle:
+        if not is_valid_bundle(temp_path):
+            os.remove(temp_path)
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid split-APK bundle. No APK files found.")
+    elif not is_valid_apk(temp_path):
         os.remove(temp_path)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid APK structure. Missing AndroidManifest.xml.")
 
@@ -189,7 +223,23 @@ async def upload_apk(
     os.makedirs(case_dir, exist_ok=True)
     permanent_path = os.path.join(case_dir, file.filename)
     shutil.move(temp_path, permanent_path)
-    
+
+    # 4b. Split-APK bundle: extract to <case_dir>/bundle/. The case keeps the original
+    # bundle filename for display; resolve_analysis_apk() maps it to the base APK.
+    bundle_info = None
+    if is_bundle:
+        try:
+            bundle_info = extract_bundle(permanent_path, case_dir)
+        except Exception as e:
+            db.delete(new_case)
+            db.commit()
+            shutil.rmtree(case_dir, ignore_errors=True)
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid split-APK bundle: {e}")
+        if bundle_info.get("package_name"):
+            new_case.package_name = bundle_info["package_name"]
+        db.commit()
+        db.refresh(new_case)
+
     # 5. Build sha256 manifest
     append_to_manifest(case_dir, file.filename, apk_hash)
     
@@ -199,7 +249,8 @@ async def upload_apk(
         action="APK_UPLOADED",
         case_id=new_case.id,
         user_id=current_user.id,
-        details={"filename": file.filename, "hash": apk_hash}
+        details={"filename": file.filename, "hash": apk_hash,
+                 **({"bundle": bundle_info} if bundle_info else {})}
     )
     
     # 7. Run analysis in a background thread (no Redis/Celery needed)

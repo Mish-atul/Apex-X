@@ -4,10 +4,10 @@ Computes structural fingerprints of an APK to detect repackaged malware variants
 that evade simple SHA256 file hashes.
 """
 
+from app.utils.file_utils import long_path
 import os
-import json
 import hashlib
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 def compute_structural_fingerprint(androguard_data: Dict[str, Any], apktool_dir: str) -> Dict[str, Any]:
     """
@@ -45,9 +45,9 @@ def compute_structural_fingerprint(androguard_data: Dict[str, Any], apktool_dir:
     # Just hashing the list of directories under smali/ to get a "shape"
     class_dirs = []
     if apktool_dir and os.path.isdir(apktool_dir):
-        for root, dirs, files in os.walk(apktool_dir):
+        for root, dirs, files in os.walk(long_path(apktool_dir)):
             if "smali" in root:
-                rel = os.path.relpath(root, apktool_dir)
+                rel = os.path.relpath(root, long_path(apktool_dir))
                 class_dirs.append(rel)
     
     if class_dirs:

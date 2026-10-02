@@ -27,6 +27,7 @@ class Case(Base):
     case_number = Column(String(50), unique=True, nullable=False)
     apk_hash = Column(String(64), nullable=False)
     apk_name = Column(String, nullable=False)
+    package_name = Column(String, nullable=True)
     status = Column(String, default="pending")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

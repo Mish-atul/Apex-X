@@ -1,7 +1,15 @@
 import Link from "next/link";
 import { ArrowLeft, Zap } from "lucide-react";
-import { REAL_COPILOT_SUGGESTIONS } from "@/services/realData";
 import { CaseResponse } from "@/services/api";
+
+// Static example prompts shown as clickable suggestions (UI affordance, not case data)
+const SUGGESTED_QUERIES = [
+  "What permissions does this APK request?",
+  "Are there any exported components without protection?",
+  "What hardcoded secrets were found?",
+  "Summarize the OWASP vulnerabilities detected.",
+  "What is the overall risk level and why?",
+];
 
 export default function CopilotSidebar({
   selectedCase,
@@ -72,7 +80,7 @@ export default function CopilotSidebar({
           Suggested Queries
         </h3>
         <div className="space-y-2">
-          {REAL_COPILOT_SUGGESTIONS.map((suggestion) => (
+          {SUGGESTED_QUERIES.map((suggestion) => (
             <button
               type="button"
               key={suggestion}

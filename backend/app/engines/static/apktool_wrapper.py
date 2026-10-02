@@ -4,6 +4,7 @@ Decompiles APK files into Smali code, resources, and AndroidManifest.xml
 using the apktool command-line tool via subprocess.
 """
 
+from app.utils.file_utils import long_path
 import os
 import subprocess
 import shutil
@@ -13,7 +14,7 @@ from typing import Optional, Dict, Any
 logger = logging.getLogger(__name__)
 
 # Timeout for apktool decompilation (seconds)
-APKTOOL_TIMEOUT = 120
+APKTOOL_TIMEOUT = int(os.environ.get("APEX_APKTOOL_TIMEOUT", "600"))
 
 
 def _find_apktool() -> Optional[str]:
@@ -61,47 +62,36 @@ def decompile_apk(apk_path: str, output_dir: str, force: bool = True) -> Optiona
         )
         return None
 
-    # Build command — use java -jar for .jar files
-    if apktool_bin.endswith(".jar"):
-        cmd = ["java", "-jar", apktool_bin, "d", apk_path, "-o", output_dir]
-    else:
-        cmd = [apktool_bin, "d", apk_path, "-o", output_dir]
-    if force:
-        cmd.append("-f")
+    base = ["java", "-jar", apktool_bin] if apktool_bin.endswith(".jar") else [apktool_bin]
 
-    logger.info(f"Running APKTool: {' '.join(cmd)}")
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=APKTOOL_TIMEOUT,
-            cwd=os.path.dirname(apk_path),
-        )
-
-        if result.returncode != 0:
-            logger.error(f"APKTool failed (exit code {result.returncode})")
-            logger.error(f"STDERR: {result.stderr}")
+    # Attempt 1: full decode. Attempt 2: skip resource decoding (-r), which avoids
+    # most resource-table failures on obfuscated/large apps and is much faster.
+    attempts = [
+        ("full", base + ["d", apk_path, "-o", output_dir] + (["-f"] if force else [])),
+        ("no-resources", base + ["d", "-r", apk_path, "-o", output_dir, "-f"]),
+    ]
+    for label, cmd in attempts:
+        logger.info(f"Running APKTool ({label}): {' '.join(cmd)}")
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=APKTOOL_TIMEOUT,
+                cwd=os.path.dirname(apk_path),
+            )
+            if result.returncode == 0:
+                if not os.path.exists(os.path.join(output_dir, "AndroidManifest.xml")):
+                    logger.warning("APKTool output missing AndroidManifest.xml")
+                logger.info(f"APKTool decompilation successful ({label}): {output_dir}")
+                return output_dir
+            logger.warning(f"APKTool {label} failed (exit {result.returncode}): {result.stderr[-500:]}")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"APKTool {label} timed out after {APKTOOL_TIMEOUT}s for: {apk_path}")
+        except FileNotFoundError:
+            logger.error("APKTool binary disappeared or is not executable")
             return None
-
-        # Verify output contains expected files
-        manifest_path = os.path.join(output_dir, "AndroidManifest.xml")
-        if not os.path.exists(manifest_path):
-            logger.warning("APKTool output missing AndroidManifest.xml")
-
-        logger.info(f"APKTool decompilation successful: {output_dir}")
-        return output_dir
-
-    except subprocess.TimeoutExpired:
-        logger.error(f"APKTool timed out after {APKTOOL_TIMEOUT}s for: {apk_path}")
-        return None
-    except FileNotFoundError:
-        logger.error("APKTool binary disappeared or is not executable")
-        return None
-    except Exception as e:
-        logger.error(f"APKTool unexpected error: {e}")
-        return None
+        except Exception as e:
+            logger.warning(f"APKTool {label} unexpected error: {e}")
+    logger.error(f"APKTool failed on all attempts for: {apk_path}")
+    return None
 
 
 def get_decompiled_info(output_dir: str) -> Dict[str, Any]:
@@ -126,7 +116,7 @@ def get_decompiled_info(output_dir: str) -> Dict[str, Any]:
     info["has_smali"] = os.path.isdir(os.path.join(output_dir, "smali"))
     info["has_resources"] = os.path.isdir(os.path.join(output_dir, "res"))
 
-    for root, _dirs, files in os.walk(output_dir):
+    for root, _dirs, files in os.walk(long_path(output_dir)):
         for f in files:
             info["total_files"] += 1
             if f.endswith(".smali"):

@@ -1,10 +1,7 @@
 from celery import Celery
 from app.config import settings
-import time
 import os
-import json
-import hashlib
-from datetime import datetime, timezone
+from datetime import datetime
 from app.models.session import SessionLocal
 from app.models.database import Case, PhaseResult
 
@@ -30,9 +27,7 @@ def analyze_apk_task(case_id: str, run_static: bool = True, run_dynamic: bool = 
     """
     from app.engines.static import run_full_static_analysis
     from app.engines.dynamic import run_full_dynamic_analysis
-    from app.models.database import PhaseResult
     from app.services.hash_service import calculate_sha256, append_to_manifest
-    import os
     import logging
 
     logger = logging.getLogger(__name__)
@@ -49,9 +44,11 @@ def analyze_apk_task(case_id: str, run_static: bool = True, run_dynamic: bool = 
         db.commit()
         
         # Determine paths
-        DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "cases")
+        from app.config import settings as _s
+        DATA_DIR = _s.CASES_DIR
         case_dir = os.path.join(DATA_DIR, str(case_id))
-        apk_path = os.path.join(case_dir, case.apk_name)
+        from app.utils.file_utils import resolve_analysis_apk
+        apk_path = resolve_analysis_apk(case_dir, case.apk_name)
         
         def hash_and_log(file_path: str, artifact_name: str):
             if os.path.exists(file_path):
@@ -138,7 +135,7 @@ def analyze_apk_task(case_id: str, run_static: bool = True, run_dynamic: bool = 
         # 3.5 Cross-Case Syndicate Correlation
         from app.engines.c2 import correlation_engine
         logger.info(f"Running Cross-Case Syndicate Correlation for {case_id}")
-        correlation_result = correlation_engine.find_correlated_cases(str(case_id), apk_hash)
+        correlation_result = correlation_engine.find_correlated_cases(str(case_id), case.apk_hash)
         
         phase_record = PhaseResult(
             case_id=case_id,

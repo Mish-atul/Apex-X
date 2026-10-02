@@ -1,6 +1,5 @@
 import hmac
 import hashlib
-import os
 
 def generate_hmac_signature(secret_key: bytes, file_path: str) -> str:
     """

@@ -5,11 +5,12 @@ Base64-encoded data, and other indicators from decompiled APK sources.
 Includes whitelisting to reduce false positives from Android SDK domains.
 """
 
+from app.utils.file_utils import long_path
 import re
 import os
 import base64
 import logging
-from typing import Dict, Any, List, Set
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,35 @@ JAVA_PACKAGE_PREFIXES = [
     "libcore.", "bouncycastle.",
 ]
 
+# --- Noise Reduction & SDK Filtering ---
+
+# Directories from standard libraries and consent frameworks to skip
+IGNORED_DIR_PATTERNS = [
+    "androidx", "android/support", "android\\support",
+    "com/google/android/gms", "com\\google\\android\\gms",
+    "com/google/firebase", "com\\google\\firebase",
+    "kotlin", "kotlinx", "okhttp3", "retrofit2",
+    "io/reactivex", "org/apache", "org\\apache",
+    "com/inmobi/cmp", "com\\inmobi\\cmp",
+    "com/inmobi/ads", "com\\inmobi\\ads",
+]
+
+# Noise patterns: privacy policies, TCF compliance files, schemas, open-source licenses
+TCF_AND_POLICY_NOISE = [
+    "privacy-policy", "privacy_policy", "privacypolicy", "datenschutz",
+    "politica-privacidad", "politique-confidentialite", "politica_privacidad",
+    "devicestorage", "device_storage", "device-storage", "tcf", "gvl",
+    "disclosure", "disclosures", "consent", "cookie-statement", "cookiepolicy",
+    "iab.json", "iab_tcf", "iab-tcf", "sellers.json", "licenses",
+    "legal/privacy", "privacy_notice", "privacy-notice", "privacystatement",
+    "privacy-statement", "gdpr", "spdx.org", "apache.org/licenses",
+    "w3.org", "schemas.android.com", "ns.adobe.com", "checkerframework.org",
+    "errorprone.info", "findbugs.sourceforge.net", "jspecify.org",
+    "play.google.com", "apple.com", "uptodown.com", "goo.gle", "goo.gl",
+    "github.com", "gitlab.com", "bitbucket.org", "android.googlesource.com",
+    "hubspotusercontent", "cloudfront.net/public/disclosures",
+]
+
 # File extensions to scan for IOCs
 SCANNABLE_EXTENSIONS = {
     ".smali", ".java", ".xml", ".txt", ".json", ".js",
@@ -221,6 +251,9 @@ def extract_iocs_from_file(file_path: str) -> Dict[str, Any]:
         for addr in BTC_REGEX.findall(line):
             result["crypto_wallets"].add(f"btc:{addr}")
             _add_ref(f"btc:{addr}", line_num, line)
+        for addr in BTC_BECH32_REGEX.findall(line):
+            result["crypto_wallets"].add(f"btc:{addr}")
+            _add_ref(f"btc:{addr}", line_num, line)
         for addr in ETH_REGEX.findall(line):
             result["crypto_wallets"].add(f"eth:{addr}")
             _add_ref(f"eth:{addr}", line_num, line)
@@ -294,7 +327,17 @@ def extract_iocs_from_directory(directory: str) -> Dict[str, Any]:
         logger.error(f"Directory not found: {directory}")
         return {**_sets_to_lists(aggregated), "files_scanned": 0, "code_references": {}}
 
-    for root, _dirs, files in os.walk(directory):
+    for root, _dirs, files in os.walk(long_path(directory)):
+        # Skip scanning inside known third-party support/advertising libraries
+        norm_root = root.replace("\\", "/")
+        if any(ign in norm_root for ign in [
+            "/androidx/", "/android/support/", "/kotlin/", "/kotlinx/",
+            "/com/google/android/gms/", "/com/google/firebase/",
+            "/okhttp3/", "/retrofit2/", "/org/apache/",
+            "/com/inmobi/cmp/", "/com/inmobi/ads/", "/com/facebook/ads/",
+        ]):
+            continue
+
         for filename in files:
             _, ext = os.path.splitext(filename)
             if ext.lower() not in SCANNABLE_EXTENSIONS:
@@ -327,7 +370,7 @@ def extract_iocs_from_directory(directory: str) -> Dict[str, Any]:
                     aggregated["code_references"][ioc_val] = []
                 for ref in refs:
                     # Make path relative to the scan directory
-                    rel = os.path.relpath(ref["file"], directory)
+                    rel = os.path.relpath(ref["file"], long_path(directory))
                     aggregated["code_references"][ioc_val].append({
                         "file": rel.replace("\\", "/"),
                         "line": ref["line"],
@@ -336,6 +379,21 @@ def extract_iocs_from_directory(directory: str) -> Dict[str, Any]:
                 # Cap at 5 references per IOC across all files
                 aggregated["code_references"][ioc_val] = aggregated["code_references"][ioc_val][:5]
 
+    # Prioritize and cap URLs to avoid overwhelming UI/DB with 40,000+ items
+    def _url_priority(u: str) -> int:
+        u_low = u.lower()
+        # High priority: raw IP, suspicious ports, financial/C2 terms
+        if re.search(r'https?://\d+\.\d+\.\d+\.\d+', u_low): return 10
+        if any(p in u_low for p in [':8080', ':8443', ':8888', ':9001', ':4444', ':5555']): return 9
+        if any(k in u_low for k in ['telegram', 'bot', 'api/v1', 'collect', 'gate', 'c2', 'payload', 'upload', 'push']): return 8
+        if any(k in u_low for k in ['upi', 'pay', 'bank', 'auth', 'login', 'token', 'admin']): return 7
+        return 1
+
+    sorted_urls = sorted(aggregated["urls"], key=lambda u: (-_url_priority(u), u))
+    aggregated["urls"] = set(sorted_urls[:200])
+
+    sorted_domains = sorted(aggregated["domains"])
+    aggregated["domains"] = set(sorted_domains[:150])
 
     result = _sets_to_lists(aggregated)
     result["files_scanned"] = files_scanned
@@ -345,15 +403,21 @@ def extract_iocs_from_directory(directory: str) -> Dict[str, Any]:
 
     logger.info(
         f"IOC extraction complete: {files_scanned} files scanned, "
-        f"{result['total_indicators']} indicators found."
+        f"{result['total_indicators']} indicators retained (capped for relevance)."
     )
 
     return result
 
 
 def _is_whitelisted_url(url: str) -> bool:
-    """Check if a URL belongs to a whitelisted domain."""
+    """Check if a URL belongs to a whitelisted domain or is noise (privacy policies, TCF)."""
     url_lower = url.lower()
+    
+    # 1. Filter out TCF / privacy policy noise
+    if any(noise in url_lower for noise in TCF_AND_POLICY_NOISE):
+        return True
+
+    # 2. Filter out known standard domains
     for domain in WHITELISTED_DOMAINS:
         if f"://{domain}" in url_lower or f"://{domain}/" in url_lower:
             return True

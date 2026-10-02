@@ -1,7 +1,6 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-import json
 import logging
-from typing import Dict, Any
+from typing import Dict
 
 from app.engines.intelligence import copilot_rag
 

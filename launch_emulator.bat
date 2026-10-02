@@ -10,4 +10,4 @@ echo Launching Android Emulator (this takes 30-60 seconds)...
 echo DO NOT close this window!
 echo.
 
-"%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe" -avd Medium_Phone_API_36.1 -no-audio -no-snapshot-save -gpu auto
+"%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe" -avd ApexX_Sandbox -no-audio -no-snapshot-save -gpu auto

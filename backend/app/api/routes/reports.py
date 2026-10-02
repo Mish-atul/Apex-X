@@ -5,12 +5,11 @@ report via the local Qwen 2.5 LLM, translates via SarvamAI, and renders to PDF.
 """
 
 import os
-import sys
 import json
 import zipfile
 import datetime
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse
@@ -42,7 +41,11 @@ def translate_text(text: str, target_lang: str) -> str:
         
     try:
         from sarvamai import SarvamAI
-        client = SarvamAI(api_subscription_key="sk_qzesjw16_SbwHTehCfWU6TiWKYMheuH9t")
+        api_key = os.getenv("SARVAM_API_KEY", "")
+        if not api_key:
+            logger.warning("SARVAM_API_KEY not set — report will be generated in English")
+            return text
+        client = SarvamAI(api_subscription_key=api_key)
         # Translate in chunks of ~450 chars to stay within API limits
         if len(text) > 450:
             chunks = []
@@ -241,9 +244,11 @@ def _load_case_data(case_id: str, db: Session) -> Dict[str, Any]:
         elif pr.phase == "dynamic" and pr.result:
             result = pr.result
             data["dynamic_analysis"] = {
-                "monkey_events": result.get("monkey_test", {}).get("events_injected", 0),
-                "network_analysis": result.get("network_analysis", {}),
-                "behavioral_flags": result.get("behavioral_analysis", {}).get("flags", []),
+                "mode": result.get("mode"),
+                "total_events": result.get("total_events", 0),
+                "network_activity": (result.get("network_activity") or [])[:30],
+                "dropped_packages": result.get("dropped_packages", []),
+                "behaviors": result.get("behaviors", {}),
                 "risk_score": result.get("risk_score", 0),
             }
             
@@ -412,10 +417,9 @@ class EvidencePackager:
 
 router = APIRouter()
 
-root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-
-REPORTS_DIR = os.path.join(root_dir, "data", "reports")
-CASES_DIR = os.path.join(root_dir, "data", "cases")
+from app.config import settings as _settings
+REPORTS_DIR = _settings.REPORTS_DIR
+CASES_DIR = _settings.CASES_DIR
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(CASES_DIR, exist_ok=True)
 
@@ -471,7 +475,7 @@ async def download_evidence_package(case_id: str):
     Generates and returns the Section 65B ZIP evidence package.
     """
     try:
-        packager = EvidencePackager(CASES_DIR, os.path.join(root_dir, "keys"))
+        packager = EvidencePackager(CASES_DIR, os.path.join(_settings.DATA_DIR, "keys"))
         case_number = f"CASE-{case_id[:8].upper()}"
         
         case_dir = os.path.join(CASES_DIR, case_id)

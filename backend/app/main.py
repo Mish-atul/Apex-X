@@ -4,10 +4,20 @@ from app.config import settings
 
 from app.models.session import engine
 from app.models.database import Base
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Create database tables
 # In a real production app, this would be handled by Alembic migrations
 Base.metadata.create_all(bind=engine)
+
+# Fail-safe warning for insecure production configuration
+if settings.SECRET_KEY == "temporary_dev_secret_key_change_in_prod":
+    logger.warning(
+        "SECRET_KEY is the built-in development default. Set a strong SECRET_KEY "
+        "environment variable before deploying to production."
+    )
 
 app = FastAPI(
     title="APEX-X Platform API",
@@ -16,10 +26,13 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# Configure CORS to allow all origins
+# Configure CORS from settings (override with APEX_CORS_ORIGINS in production).
+# "*" with credentials is invalid per the CORS spec, so use an explicit allow-list.
+_cors_origins = settings.cors_origin_list
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?" if _cors_origins else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

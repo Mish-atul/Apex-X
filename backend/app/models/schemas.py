@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional
 from datetime import datetime
 from uuid import UUID
 
@@ -8,6 +8,7 @@ class CaseBase(BaseModel):
     case_number: str
     apk_hash: str
     apk_name: Optional[str] = None
+    package_name: Optional[str] = None
     status: Optional[str] = "pending"
     threat_score: Optional[int] = 0
 
@@ -43,10 +44,11 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
 
-from pydantic import validator
+from pydantic import field_validator
 
 class UserSignup(UserCreate):
-    @validator("username")
+    @field_validator("username")
+    @classmethod
     def validate_username(cls, v):
         if not v.endswith("@cyber.gov"):
             raise ValueError("Email must end with @cyber.gov")
@@ -55,9 +57,8 @@ class UserSignup(UserCreate):
 class UserResponse(UserBase):
     id: int
     created_at: datetime
-    
-    class Config:
-        orm_mode = True
+
+    model_config = {"from_attributes": True}
 
 # --- Token Schemas ---
 class Token(BaseModel):

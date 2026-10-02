@@ -6,7 +6,7 @@ permissions, API calls, certificate info, strings, components, and CFG data.
 
 import os
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,13 @@ try:
     from androguard.core.apk import APK
     from androguard.core.dex import DEX
     ANDROGUARD_AVAILABLE = True
+    try:  # androguard 4 logs every parsed resource at DEBUG via loguru
+        import sys
+        from loguru import logger as _loguru
+        _loguru.remove()
+        _loguru.add(sys.stderr, level="WARNING")
+    except Exception:
+        pass
 except ImportError:
     ANDROGUARD_AVAILABLE = False
     logger.warning(
@@ -245,11 +252,20 @@ def _extract_certificate_info(apk_obj) -> Dict[str, Any]:
             cert_info["subject"] = str(cert.subject) if hasattr(cert, "subject") else "unknown"
             cert_info["serial_number"] = str(cert.serial_number) if hasattr(cert, "serial_number") else "unknown"
             if hasattr(cert, "sha256_fingerprint"):
-                cert_info["fingerprint_sha256"] = cert.sha256_fingerprint.hex()
+                fp = cert.sha256_fingerprint
+                cert_info["fingerprint_sha256"] = fp.hex() if isinstance(fp, bytes) else str(fp).replace(" ", "").lower()
             if hasattr(cert, "not_valid_before"):
                 cert_info["valid_from"] = str(cert.not_valid_before)
             if hasattr(cert, "not_valid_after"):
                 cert_info["valid_to"] = str(cert.not_valid_after)
+            try:  # asn1crypto certificates (androguard >= 4)
+                validity = cert["tbs_certificate"]["validity"]
+                cert_info["valid_from"] = str(validity["not_before"].native)
+                cert_info["valid_to"] = str(validity["not_after"].native)
+                cert_info["issuer"] = cert.issuer.human_friendly
+                cert_info["subject"] = cert.subject.human_friendly
+            except Exception:
+                pass
     except Exception as e:
         logger.warning(f"Failed to extract certificate info: {e}")
 

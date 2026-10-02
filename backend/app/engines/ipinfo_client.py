@@ -6,7 +6,7 @@ Classifies IPs as benign/suspicious/malicious based on ASN ownership.
 
 import logging
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 
 import requests
 

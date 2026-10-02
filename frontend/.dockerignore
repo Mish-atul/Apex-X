@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+.env
+.env.*
+*.db
+data
+sample_apks
+__pycache__
+tsconfig.tsbuildinfo

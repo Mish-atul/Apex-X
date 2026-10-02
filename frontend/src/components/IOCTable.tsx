@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import type { IOCEntry } from "@/services/realData";
 import { exportIOCsAsCSV, exportIOCsAsJSON, exportIOCsAsSTIX } from "@/services/api";
+import { useFeedback } from "@/components/Feedback";
 
 interface IOCTableProps {
   iocs: IOCEntry[];
@@ -27,6 +28,7 @@ const SortArrow = ({ field, currentSortField, sortAsc }: { field: SortField, cur
 };
 
 export default function IOCTable({ iocs }: IOCTableProps) {
+  const { toast } = useFeedback();
   const [search, setSearch] = useState("");
   const [sortField, setSortField] = useState<SortField>("confidence");
   const [sortAsc, setSortAsc] = useState(false);
@@ -209,7 +211,7 @@ export default function IOCTable({ iocs }: IOCTableProps) {
                         onClick={() => {
                           const text = `To: Nodal Officer\nRequest to freeze ${ioc.type === 'upi' ? 'UPI ID' : 'Bank Account'}:\n${ioc.value}\nContext: ${ioc.context}\nCase relates to cyber fraud.`;
                           navigator.clipboard.writeText(text);
-                          alert("Freeze request block copied to clipboard");
+                          toast("success", "Copied to clipboard", "Freeze-request block ready to paste.");
                         }}
                         className="ml-2 px-1.5 py-0.5 text-[10px] bg-primary/10 hover:bg-primary/20 rounded border border-primary/20 cursor-pointer"
                         title="Copy freeze-request block"

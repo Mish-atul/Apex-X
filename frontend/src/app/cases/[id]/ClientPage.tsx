@@ -9,19 +9,6 @@ import IOCTable from "@/components/IOCTable";
 import VulnerabilityCard from "@/components/VulnerabilityCard";
 import PhaseProgress from "@/components/PhaseProgress";
 import CaseTabs from "./CaseTabs";
-import {
-  REAL_CASES,
-  REAL_PERMISSIONS,
-  REAL_IOCS,
-  REAL_TIMELINE_EVENTS,
-  REAL_GRAPH_NODES,
-  REAL_GRAPH_EDGES,
-  REAL_VULNERABILITIES,
-  REAL_YARA_MATCHES,
-  REAL_PHASE_STATUS,
-  REAL_PHASE_STATUS_ANALYZING,
-  REAL_REPORTS,
-} from "@/services/realData";
 import { downloadReport, downloadEvidencePackage, getCaseDetail, getCaseResults } from "@/services/api";
 import { FileText, Download, AlertTriangle, Shield, Activity, Network, Bug, FileDown, ArrowLeft } from "lucide-react";
 import Link from "next/link";
@@ -86,10 +73,7 @@ export default function CaseDetailClient({ caseId }: { caseId: string }) {
             score += misconfigs * 5;
             score += totalIocs * 1;
             
-            detailData.threat_score = Math.min(score, 74);
-            if (yaraHits > 0) {
-              detailData.threat_score = Math.min(score + (yaraHits * 25), 100);
-            }
+            detailData.threat_score = Math.min(score + yaraHits * 25, 100);
           }
 
           // AGGREGATE THREAT SCORE ACROSS ALL PHASES
@@ -134,7 +118,7 @@ export default function CaseDetailClient({ caseId }: { caseId: string }) {
         type: "pdf",
         language: lang,
         generated_at: new Date().toISOString(),
-        size_kb: 1850 + idx * 120,
+        size_kb: 0,
       }));
       setCaseReports(generatedReports);
       
@@ -148,8 +132,6 @@ export default function CaseDetailClient({ caseId }: { caseId: string }) {
       setCaseData((currentCaseData: any) => {
         if (currentCaseData && currentCaseData.status === "analyzing") {
           loadData(false);
-        } else if (currentCaseData && currentCaseData.status !== "analyzing") {
-          clearInterval(intervalId);
         }
         return currentCaseData;
       });
@@ -159,14 +141,55 @@ export default function CaseDetailClient({ caseId }: { caseId: string }) {
   }, [caseId]);
 
   if (isLoading) {
-    return <div className="p-8 flex justify-center"><p className="font-mono text-primary">Loading case {caseId}...</p></div>;
+    return (
+      <main className="flex-1 flex flex-col max-w-7xl mx-auto w-full p-6">
+        <div className="h-4 w-32 bg-surface rounded animate-pulse mb-4" />
+        <div className="bg-panel border border-border-subtle rounded-lg p-6 mb-6 animate-pulse">
+          <div className="h-3 w-24 bg-surface rounded mb-3" />
+          <div className="h-8 w-2/3 bg-surface rounded mb-2" />
+          <div className="h-3 w-40 bg-surface rounded" />
+        </div>
+        <div className="flex gap-2 mb-4">
+          {[...Array(6)].map((_, i) => <div key={i} className="h-8 w-28 bg-surface rounded animate-pulse" />)}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {[...Array(3)].map((_, i) => <div key={i} className="h-32 bg-panel border border-border-subtle rounded-lg animate-pulse" />)}
+        </div>
+        <p className="sr-only">Loading case {caseId}</p>
+      </main>
+    );
   }
   
   if (error || !caseData) {
     return <div className="p-8 flex justify-center"><p className="font-mono text-red-600">{error || "Case not found"}</p></div>;
   }
 
-  const phaseStatus = caseData.status === "analyzing" ? REAL_PHASE_STATUS_ANALYZING : REAL_PHASE_STATUS;
+  const phaseOf = (name: string) =>
+    Array.isArray(analysisResults) ? analysisResults.find((r: any) => r.phase === name)?.result : undefined;
+  const toStatus = (r: any): "pending" | "running" | "completed" | "failed" => {
+    if (!r) return caseData.status === "analyzing" ? "running" : "pending";
+    const st = r.status;
+    if (st === "failed" || st === "error") return "failed";
+    if (st === "running") return "running";
+    if (st === "queued" || st === "pending") return "pending";
+    return "completed";
+  };
+  const phaseStatus = [
+    { phase: "Upload & Validation", r: { status: "completed", completed_at: caseData.created_at } },
+    { phase: "Static Analysis", r: phaseOf("static") },
+    { phase: "Dynamic Analysis", r: phaseOf("dynamic") },
+    { phase: "C2 Intelligence", r: phaseOf("c2_intelligence") },
+    { phase: "Vulnerability Scan", r: phaseOf("vulnerability") },
+  ].map(({ phase, r }) => {
+    const status = toStatus(r);
+    return {
+      phase,
+      status,
+      progress: status === "completed" || status === "failed" ? 100 : status === "running" ? 50 : 0,
+      started_at: r?.started_at || null,
+      completed_at: status === "completed" ? r?.completed_at || null : null,
+    };
+  });
 
   return (
     <main className="flex-1 flex flex-col max-w-7xl mx-auto w-full p-6">

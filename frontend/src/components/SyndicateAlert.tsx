@@ -19,7 +19,7 @@ export default function SyndicateAlert({ caseId }: { caseId: string }) {
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://apex-x-backend.onrender.com/api/v1";
+    const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
     fetch(`${API_BASE_URL}/cases/${caseId}/correlations`)
       .then(async res => {
         if (!res.ok) throw new Error("API error");

@@ -1,116 +1,75 @@
 import os
-import json
-import logging
 import shutil
+import tempfile
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from app.engines.dynamic import run_full_dynamic_analysis
-from app.engines.dynamic import behavior_aggregator
+from app.engines import dynamic
+from app.engines.dynamic import emulator_manager
 
-# Configure logging for test output
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-class TestDynamicEngine(unittest.TestCase):
-    def setUp(self):
-        self.dummy_apk = "dummy_test_dynamic.apk"
-        self.case_dir = "test_case_dir_dynamic"
-        
-        # Create a dummy APK file 
-        with open(self.dummy_apk, "wb") as f:
-            f.write(b"PK\x03\x04") # Minimal zip header
-            
-    def tearDown(self):
-        # Cleanup dummy file
-        if os.path.exists(self.dummy_apk):
-            os.remove(self.dummy_apk)
-        # Clean up output dir for next test
-        if os.path.exists(self.case_dir):
-            shutil.rmtree(self.case_dir, ignore_errors=True)
+class TestDynamicParsers(unittest.TestCase):
+    def test_hex_to_ip_v4_and_v6(self):
+        self.assertEqual(emulator_manager._hex_to_ip("0100007F"), "127.0.0.1")
+        self.assertEqual(emulator_manager._hex_to_ip("0000000000000000FFFF00000100007F"), "127.0.0.1")
+        self.assertEqual(emulator_manager._hex_to_ip("00000000000000000000000000000000"), "::")
 
-    @patch('app.engines.dynamic.vm_orchestrator.start_emulator')
-    @patch('app.engines.dynamic.vm_orchestrator.list_devices')
-    @patch('app.engines.dynamic.vm_orchestrator.install_apk')
-    @patch('app.engines.dynamic.vm_orchestrator.get_package_name')
-    @patch('app.engines.dynamic.vm_orchestrator.run_monkey')
-    @patch('app.engines.dynamic.vm_orchestrator.uninstall_apk')
-    @patch('app.engines.dynamic.frida_manager.create_manager')
-    @patch('app.engines.dynamic.traffic_capture.create_capture')
-    @patch('app.engines.dynamic.pcap_analyzer.analyze_pcap')
-    def test_full_dynamic_analysis_pipeline(
-        self, mock_analyze_pcap, mock_create_capture, mock_create_frida,
-        mock_uninstall, mock_monkey, mock_get_package, mock_install,
-        mock_list_devices, mock_start_emulator
-    ):
-        # Setup mocks
-        mock_list_devices.return_value = [] # No running devices
-        mock_start_emulator.return_value = {"success": True, "serial": "emulator-5554"}
-        mock_get_package.return_value = "com.test.app"
-        mock_install.return_value = {"success": True}
-        mock_monkey.return_value = {"success": True}
-        
-        # Mock Frida Manager
-        mock_frida_mgr = MagicMock()
-        mock_frida_mgr.connect_device.return_value = True
-        mock_frida_mgr.attach_to_app.return_value = True
-        mock_frida_mgr.inject_all_hooks.return_value = {"network_hook.js": True}
-        mock_frida_mgr.collect_messages.return_value = [
-            {"hook": "network", "event": "url_open_connection", "url": "http://malicious.com", "timestamp": "2023-01-01T12:00:00Z"},
-            {"hook": "sms", "event": "send_sms", "destination": "12345", "timestamp": "2023-01-01T12:01:00Z"}
-        ]
-        mock_create_frida.return_value = mock_frida_mgr
-        
-        # Mock Traffic Capture
-        mock_traffic_cap = MagicMock()
-        mock_traffic_cap.stop_capture.return_value = {"pcap_path": "dummy.pcap", "pcap_size": 1024, "flows_count": 0}
-        mock_create_capture.return_value = mock_traffic_cap
-        
-        # Mock PCAP Analyzer
-        mock_analyze_pcap.return_value = {
-            "status": "success",
-            "dns_queries": ["malicious.com"],
-            "http_requests": [{"method": "GET", "url": "http://malicious.com", "host": "malicious.com"}]
-        }
+    def test_snapshot_uid_sockets_filters_by_uid(self):
+        tcp = (
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+            "   0: 0F02000A:A1B2 5DB8D822:01BB 01 00000000:00000000 00:00000000 00000000 10209 0 1 1\n"
+            "   1: 0F02000A:A1B3 5DB8D822:0050 01 00000000:00000000 00:00000000 00000000 10155 0 2 1\n"
+        )
 
-        # Run pipeline with a very short duration
-        results = run_full_dynamic_analysis(self.dummy_apk, self.case_dir, duration=1)
-        
-        self.assertEqual(results["status"], "completed")
-        self.assertEqual(results["phase"], "dynamic")
-        self.assertEqual(results["package_name"], "com.test.app")
-        
-        # Verify steps were executed
-        self.assertEqual(results["steps"]["vm"]["status"], "success")
-        self.assertEqual(results["steps"]["frida"]["status"], "success")
-        
-        # Verify behavior aggregator was called and produced a score
-        self.assertIsNotNone(results.get("risk_score"))
-        self.assertTrue(results.get("risk_score") > 0)
-        self.assertTrue(results["behavior_profile"]["behaviors"]["data_exfiltration"])
-        self.assertTrue(results["behavior_profile"]["behaviors"]["c2_communication"])
+        def fake_adb(args, device=None, timeout=30):
+            return {"success": True, "stdout": tcp if args[-1] == "/proc/net/tcp" else "", "stderr": ""}
 
-    def test_behavior_aggregator(self):
-        frida_messages = [
-            {"hook": "device", "event": "camera_open", "timestamp": "2023-01-01T12:00:00Z"},
-            {"hook": "file", "event": "runtime_exec", "command": "su", "timestamp": "2023-01-01T12:01:00Z"}
-        ]
-        
-        network_analysis = {
-            "dns_queries": ["c2.example.com"],
-            "http_requests": [{"method": "POST", "url": "http://c2.example.com/upload"}]
-        }
-        
-        results = behavior_aggregator.aggregate_behaviors(frida_messages, network_analysis)
-        
-        self.assertTrue(results["behaviors"]["surveillance"])
-        self.assertTrue(results["behaviors"]["command_execution"])
-        self.assertTrue(results["behaviors"]["c2_communication"])
-        
-        self.assertTrue(results["risk_score"] >= 20)
-        
-        # Verify breakdown
-        self.assertEqual(results["risk_breakdown"]["device"], 8) # camera_open
-        self.assertEqual(results["risk_breakdown"]["file"], 10) # runtime_exec
+        with patch.object(emulator_manager, "_run_adb", side_effect=fake_adb):
+            socks = emulator_manager.snapshot_uid_sockets(10209, "emulator-5554")
+        self.assertEqual(socks, [{"ip": "34.216.184.93", "port": 443, "protocol": "TCP", "state": "ESTABLISHED"}])
+
+    def test_system_events_only_for_target_package(self):
+        log = (
+            "10-02 02:03:04.012 799 2733 I wm_create_activity: [0,7332,11,owasp.sat.agoat/.SplashActivity,MAIN,NULL,NULL,0]\n"
+            "10-02 02:03:05.012 799 2733 I wm_create_activity: [0,7333,12,com.other/.Main,MAIN,NULL,NULL,0]\n"
+        )
+        events = dynamic._parse_system_events(log, "owasp.sat.agoat")
+        self.assertEqual([(e["api_call"], e["description"]) for e in events],
+                         [("Activity Launched", ".SplashActivity")])
+
+    def test_tls_sni(self):
+        sni = b"example.com"
+        ext = b"\x00\x00" + (len(sni) + 5).to_bytes(2, "big") + (len(sni) + 3).to_bytes(2, "big") + b"\x00" + len(sni).to_bytes(2, "big") + sni
+        body = b"\x03\x03" + b"\x00" * 32 + b"\x00" + b"\x00\x02\x13\x01" + b"\x01\x00" + len(ext).to_bytes(2, "big") + ext
+        hs = b"\x01" + len(body).to_bytes(3, "big") + body
+        record = b"\x16\x03\x01" + len(hs).to_bytes(2, "big") + hs
+        self.assertEqual(dynamic._tls_sni(record), "example.com")
+
+    def test_build_network_attributes_hostnames(self):
+        sockets = {"1.2.3.4:443:TCP": {"ip": "1.2.3.4", "port": 443, "protocol": "TCP"},
+                   "10.0.2.3:53:UDP": {"ip": "10.0.2.3", "port": 53, "protocol": "UDP"}}
+        pcap = {"dns": {"c2.example": ["1.2.3.4"], "dead.example": []}, "bytes": {"1.2.3.4": {"sent": 10, "recv": 20}}}
+        net = dynamic._build_network(sockets, pcap, {"dead.example"})
+        self.assertEqual(net[0]["destination"], "c2.example")
+        self.assertEqual(net[0]["protocol"], "HTTPS")
+        self.assertEqual(net[1]["destination"], "dead.example")
+        self.assertEqual(len(net), 2)  # emulator gateway excluded
+
+
+class TestDynamicFallback(unittest.TestCase):
+    def test_falls_back_to_heuristic_when_no_emulator(self):
+        case_dir = tempfile.mkdtemp()
+        try:
+            with patch.object(emulator_manager, "ensure_emulator", return_value=None), \
+                 patch.object(dynamic.heuristic_analyzer, "run_heuristic_analysis",
+                              return_value={"status": "completed", "events": [], "risk_score": 0}):
+                result = dynamic.run_full_dynamic_analysis("x.apk", case_dir, duration=1)
+            self.assertEqual(result["mode"], "heuristic")
+            self.assertTrue(any("No Android emulator" in e for e in result["errors"]))
+            self.assertTrue(os.path.exists(os.path.join(case_dir, "dynamic_analysis", "dynamic_report.json")))
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

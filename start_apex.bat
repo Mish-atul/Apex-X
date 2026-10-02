@@ -20,6 +20,10 @@ echo Both services have been launched in separate windows!
 echo - Backend API:  http://localhost:8080 (Docs: http://localhost:8080/docs)
 echo - Frontend Web: http://localhost:3000
 echo.
+echo Dynamic analysis boots the Android emulator automatically when an APK is
+echo analysed - no phone or USB cable is needed. (launch_emulator.bat is only
+echo an optional way to start the emulator manually beforehand.)
+echo.
 echo You can now observe the logs in those windows.
 echo Press any key to close this launcher...
 pause >nul

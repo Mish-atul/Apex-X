@@ -1,406 +1,224 @@
 <div align="center">
 
-# 🛡️ APEX-X
+# APEX-X
 
-### Agentic APK Profiling, Exploitation Intelligence & Threat Attribution
+### Android Malware Forensics & Threat Attribution Platform
 
-**An enterprise-grade forensic intelligence platform for Android malware analysis**
+Automated static analysis, sandboxed dynamic analysis, threat-infrastructure mapping and court-ready reporting for suspicious Android applications.
 
-[![Next.js](https://img.shields.io/badge/Next.js-16.2-black?logo=next.js)](https://nextjs.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?logo=typescript&logoColor=white)](https://typescriptlang.org/)
-[![License](https://img.shields.io/badge/License-Educational-orange)](#disclaimer)
+[![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://python.org/)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](#docker-deployment)
+[![Tests](https://img.shields.io/badge/tests-44%20passing-success)](#testing)
 
 </div>
 
 ---
 
-## 📋 Table of Contents
+## Overview
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
-- [Analysis Engines](#analysis-engines)
-- [Pre-Tested Results](#pre-tested-results)
-- [API Reference](#api-reference)
-- [Team](#team)
-- [Disclaimer](#disclaimer)
+APEX-X was developed as a research internship project supporting cybercrime investigation in Bengaluru. Investigators regularly encounter fraudulent Android apps — fake traffic-challan, government-scheme, wedding-invitation and banking apps distributed over WhatsApp and SMS. APEX-X turns a suspicious APK into an evidence-grade case file in minutes:
+
+1. **Upload** an APK (or a split-APK bundle).
+2. **Static analysis** decompiles the app and extracts permissions, code indicators, packers and behaviour rules.
+3. **Dynamic analysis** runs the app inside an automatically started Android emulator and records what it actually does — network connections, sensitive-API use, background services and any secondary apps it installs.
+4. **Intelligence** correlates indicators with threat-intelligence feeds and other cases.
+5. **Reporting** produces a risk-scored case with multilingual PDF reports.
+
+No physical phone or USB connection is required.
 
 ---
 
-## Overview
+## Key Features
 
-**APEX-X** is a full-stack Android malware analysis platform built as a group project for **CMP311 — Professional Project Planning and Prototyping**. It provides security professionals and developers with tools to:
+### Static analysis
+| Capability | Tooling |
+|---|---|
+| Decompilation | APKTool (with resource-free fallback), JADX |
+| Permissions, APIs, certificate | Androguard |
+| Manifest and component exposure | Custom parser (exported components, debuggable, backup, cleartext) |
+| Malware signatures | YARA |
+| Behaviour rules | Quark-Engine (280 rules) |
+| Packer / obfuscator / anti-analysis detection | APKiD |
+| Indicators of compromise | URL, domain, IP, email and secret extraction with source references |
+| Backend-as-a-Service exposure, remote-access tooling, fingerprinting | Custom detectors |
 
-- **Decompile** APK files using APKTool and JADX
-- **Analyze** permissions, APIs, and control flow graphs via Androguard
-- **Detect** malware signatures using YARA rules
-- **Extract** Indicators of Compromise (IOCs) — URLs, IPs, domains, API keys
-- **Scan** for OWASP Mobile Top 10 vulnerabilities
-- **Score** risk using a weighted multi-factor algorithm (0–100)
-- **Visualize** threat infrastructure with interactive graph exploration
-- **Generate** Section 65B-compliant forensic reports
+### Dynamic analysis (emulator sandbox)
+- Boots an Android emulator automatically and installs the sample (including split-APK bundles and apps targeting old SDK levels).
+- Handles malformed APKs that standard tools reject, so samples still install and run.
+- Exercises the app with a UI-aware explorer (reads each screen, taps through onboarding, fills forms with placeholder data) followed by randomised UI events.
+- Delivers realistic device events — an incoming SMS, a location fix, low battery and system broadcasts — so trigger-based behaviour shows up during the run.
+- Records evidence attributed to the app's own Android user ID: its logs, open network connections, a packet capture of emulator traffic (DNS names, server names, byte counts), runtime permission use and running services.
+- **Child-app tracking:** detects any app the sample installs during the run, then tracks that app's network activity, logs and permissions and pulls its APK for hashing.
+- Optional Frida instrumentation records sensitive API calls.
+- Manual analyst mode on the emulator or a connected phone.
+- Falls back to a clearly labelled code-level scan if no emulator is available.
 
-The platform ships with **real analysis results** from three intentionally vulnerable Android applications (DIVA, InsecureShop, AndroGoat), with zero dummy data.
+### Intelligence and scoring
+- Threat-infrastructure graph with IP and domain enrichment (cloud/private ranges, suspicious TLDs, algorithmically generated domains).
+- VirusTotal enrichment: detection ratio, malware-family attribution, sandbox verdicts.
+- Cross-case correlation on shared domains, IPs, backend projects and identical samples.
+- OWASP Mobile Top 10 mapping with CWE and CVSS.
+- Evidence-based threat score: confirmed malware families and observed dropper behaviour raise the floor, so real malware is not under-scored.
+
+### Reporting and interface
+- PDF reports in English, Hindi, Kannada, Tamil and Telugu.
+- Evidence package and IOC export (CSV, JSON, STIX 2.1).
+- Web dashboard with per-case Overview, Static, Dynamic, C2 and Vulnerability tabs, live analysis progress and a reports index.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     APEX-X Platform                         │
-├──────────────────────┬──────────────────────────────────────┤
-│   Frontend (Next.js) │        Backend (FastAPI)             │
-│                      │                                      │
-│  ┌────────────────┐  │  ┌──────────────────────────────┐   │
-│  │ Landing Page   │  │  │ Static Analysis Engine       │   │
-│  │ Upload / Intake│  │  │  ├─ APKTool Wrapper          │   │
-│  │ Pre-Tested Apps│  │  │  ├─ JADX Wrapper             │   │
-│  │ Case Detail    │  │  │  ├─ Androguard Analyzer      │   │
-│  │ Graph Explorer │  │  │  ├─ Manifest Parser          │   │
-│  │ Co-Pilot Chat  │  │  │  ├─ YARA Scanner             │   │
-│  │ Reports        │  │  │  ├─ IOC Extractor            │   │
-│  └────────────────┘  │  │  └─ Risk Scorer              │   │
-│                      │  ├──────────────────────────────┐   │
-│  Components:         │  │ Dynamic Analysis Engine      │   │
-│  ├─ ThreatScore      │  │  ├─ VM Orchestrator          │   │
-│  ├─ PermissionMatrix │  │  │  ├─ Frida Manager          │   │
-│  ├─ IOCTable         │  │  │  ├─ Traffic Capture        │   │
-│  ├─ NetworkGraph     │  │  │  ├─ PCAP Analyzer          │   │
-│  ├─ VulnerabilityCard│  │  │  └─ Behavior Aggregator    │   │
-│  ├─ BehaviorTimeline │  │  ├──────────────────────────┐    │
-│  └─ PhaseProgress    │  │  │ Vulnerability Engine     │    │
-│                      │  │  │  ├─ OWASP Scanner        │    │
-│                      │  │  │  ├─ CVSS Calculator      │    │
-│                      │  │  │  ├─ CWE Mapper           │    │
-│                      │  │  │  └─ PoC Generator        │    │
-│                      │  │  └────────────────────────┘      │
-│                      │  └──────────────────────────────┘   │
-├──────────────────────┴──────────────────────────────────────┤
-│              Infrastructure (Docker Compose)                │
-│  PostgreSQL │ Redis │ Neo4j │ ChromaDB │ Android Emulator   │
-└─────────────────────────────────────────────────────────────┘
+            ┌──────────────── Next.js frontend (:3000) ────────────────┐
+            │ Dashboard · Upload · Case tabs · Reports · Threat map    │
+            └──────────────────────────┬───────────────────────────────┘
+                                       │ REST (JWT)
+            ┌──────────────────────────▼───────────────────────────────┐
+            │                 FastAPI backend (:8080)                  │
+            │  upload ─► static ─► dynamic ─► C2 intel ─► vuln ─► score │
+            └───┬──────────────┬─────────────────┬──────────────────┬──┘
+                │              │                 │                  │
+       SQLite / Postgres   case files      Android emulator     VirusTotal,
+       (cases, results)   (data/cases)   via adb + Frida     IPinfo, Sarvam
 ```
 
+| Path | Purpose |
+|---|---|
+| `backend/app/api/routes` | REST endpoints (auth, upload, cases, reports, copilot) |
+| `backend/app/engines/static` | Decompilation, Androguard, YARA, APKiD, Quark, IOC extraction |
+| `backend/app/engines/dynamic` | Emulator lifecycle, UI explorer, capture, Frida, manual analyst mode |
+| `backend/app/engines/c2` | Threat graph, infrastructure enrichment, cross-case correlation |
+| `backend/app/engines/vulnerability` | OWASP scan, CWE/CVSS mapping, narratives |
+| `backend/app/services` | Background orchestration and threat scoring |
+| `frontend/src/app` | Next.js pages (dashboard, cases, upload, reports) |
+| `tools/` | APKTool and JADX binaries (Frida server downloaded on demand) |
+| `docs/` | Dynamic-analysis guide, submission summary, project documents |
 ---
 
-## Features
-
-### 🔬 Static Analysis Engine
-| Module | Description |
-|--------|-------------|
-| **APKTool Wrapper** | Decompiles APK → extracts Smali code, resources, assets |
-| **JADX Wrapper** | Reconstructs Java source from DEX bytecode |
-| **Androguard Analyzer** | Extracts permissions, APIs, CFGs, certificates |
-| **Manifest Parser** | Deep-parses AndroidManifest.xml for misconfigurations |
-| **YARA Scanner** | Matches APK contents against malware signature rules |
-| **IOC Extractor** | Extracts URLs, IPs, domains, emails, API keys |
-| **Risk Scorer** | Weighted multi-factor scoring algorithm (0–100) |
-
-### 🧪 Dynamic Analysis Engine
-| Module | Description |
-|--------|-------------|
-| **VM Orchestrator** | Manages Android emulator lifecycle (ADB-based) |
-| **Frida Manager** | Injects Frida scripts for runtime API hooking |
-| **Traffic Capture** | Intercepts network traffic via mitmproxy |
-| **PCAP Analyzer** | Parses captured packets for C2 communication |
-| **Behavior Aggregator** | Correlates runtime behaviors into a threat profile |
-
-### 🛡️ Vulnerability Engine
-| Module | Description |
-|--------|-------------|
-| **OWASP Scanner** | Checks against OWASP Mobile Top 10 (2024) |
-| **CVSS Calculator** | Computes CVSS v3.1 scores for findings |
-| **CWE Mapper** | Maps vulnerabilities to CWE identifiers |
-| **PoC Generator** | Generates proof-of-concept narratives |
-
-### 🖥️ Frontend
-- **Forensic Minimalist UI** — Light theme, premium typography (Outfit + JetBrains Mono)
-- **Pre-Tested Apps Tab** — Browse real analysis results without uploading
-- **Interactive Case Detail** — Tabbed views: Overview, Static, Dynamic, C2, Vulns, Reports
-- **Threat Score Gauge** — Animated 0–100 risk visualization
-- **Permission Matrix** — Color-coded permission risk breakdown
-- **IOC Table** — Searchable/filterable IOC explorer with CSV/JSON/STIX export
-- **Network Graph** — React Flow-based infrastructure visualization
-- **Co-Pilot** — AI-assisted forensic Q&A interface
-
----
-
-## Tech Stack
-
-### Frontend
-| Technology | Purpose |
-|-----------|---------|
-| Next.js 16 | React framework with App Router |
-| TypeScript 5 | Type safety |
-| Tailwind CSS 4 | Utility-first styling |
-| Framer Motion | Animations and transitions |
-| React Flow | Graph visualization |
-| Three.js / react-globe.gl | 3D globe on landing page |
-| Lucide React | Icon system |
-| Zustand | State management |
-
-### Backend
-| Technology | Purpose |
-|-----------|---------|
-| FastAPI | REST API framework |
-| SQLAlchemy | ORM for PostgreSQL |
-| Androguard | APK binary analysis |
-| YARA | Malware signature matching |
-| Frida | Runtime instrumentation |
-| Scapy / mitmproxy | Network traffic analysis |
-| Celery + Redis | Async task queue |
-| ReportLab | PDF report generation |
-
-### Infrastructure
-| Service | Purpose |
-|---------|---------|
-| PostgreSQL 15 | Primary data store |
-| Neo4j 5 | Threat graph database |
-| Redis 7 | Task queue broker + cache |
-| ChromaDB | Vector store for Co-Pilot |
-| Docker Android | Sandboxed emulator for dynamic analysis |
-
----
-
-## Project Structure
-
-```
-Apex-X/
-├── frontend/                   # Next.js 16 application
-│   ├── src/
-│   │   ├── app/                # App Router pages
-│   │   │   ├── page.tsx        # Landing page
-│   │   │   ├── login/          # Authentication
-│   │   │   ├── upload/         # APK upload / intake
-│   │   │   ├── dashboard/      # Pre-Tested Apps view
-│   │   │   ├── cases/[id]/     # Case detail (tabbed)
-│   │   │   ├── graph/          # Network graph explorer
-│   │   │   ├── copilot/        # AI Co-Pilot
-│   │   │   └── reports/        # Report management
-│   │   ├── components/         # Reusable UI components (18)
-│   │   ├── services/
-│   │   │   ├── api.ts          # API client + local data fallback
-│   │   │   └── realData.ts     # Real analysis data (auto-generated)
-│   │   └── hooks/
-│   │       └── useAuth.ts      # Auth state management
-│   └── package.json
-│
-├── backend/                    # FastAPI application
-│   ├── app/
-│   │   ├── main.py             # FastAPI app entry point
-│   │   ├── config.py           # Settings (env-based)
-│   │   ├── api/
-│   │   │   ├── routes/         # REST endpoints
-│   │   │   │   ├── auth.py     # Login / Signup
-│   │   │   │   ├── cases.py    # Case CRUD
-│   │   │   │   ├── upload.py   # APK upload
-│   │   │   │   ├── analysis.py # Trigger analysis
-│   │   │   │   ├── results.py  # Fetch results
-│   │   │   │   ├── reports.py  # PDF download
-│   │   │   │   └── ws.py       # WebSocket Co-Pilot
-│   │   │   └── middleware/
-│   │   │       └── rbac.py     # Role-based access control
-│   │   ├── engines/
-│   │   │   ├── static/         # Static analysis pipeline
-│   │   │   │   ├── __init__.py # Orchestrator
-│   │   │   │   ├── apktool_wrapper.py
-│   │   │   │   ├── jadx_wrapper.py
-│   │   │   │   ├── androguard_analyzer.py
-│   │   │   │   ├── manifest_parser.py
-│   │   │   │   ├── yara_scanner.py
-│   │   │   │   ├── ioc_extractor.py
-│   │   │   │   └── risk_scorer.py
-│   │   │   ├── dynamic/        # Dynamic analysis pipeline
-│   │   │   │   ├── __init__.py # Orchestrator
-│   │   │   │   ├── vm_orchestrator.py
-│   │   │   │   ├── frida_manager.py
-│   │   │   │   ├── traffic_capture.py
-│   │   │   │   ├── pcap_analyzer.py
-│   │   │   │   └── behavior_aggregator.py
-│   │   │   └── vulnerability/  # Vulnerability engine
-│   │   │       ├── __init__.py
-│   │   │       ├── owasp_scanner.py
-│   │   │       ├── cvss_calculator.py
-│   │   │       ├── cwe_mapper.py
-│   │   │       └── poc_generator.py
-│   │   ├── models/             # SQLAlchemy models
-│   │   ├── services/           # Business logic
-│   │   └── utils/              # Helpers (hashing, security)
-│   ├── run_engines.py          # CLI test runner
-│   ├── test_results/           # Pre-generated analysis outputs
-│   └── requirements.txt
-│
-├── tools/                      # Bundled binaries (jadx, apktool)
-├── docker-compose.yml          # Full infra stack
-├── render.yaml                 # Render deployment config
-└── README.md
-```
-
----
-
-## Getting Started
+## Getting Started (local)
 
 ### Prerequisites
+- Python 3.12, Node.js 20+, Java 17 (for APKTool/JADX)
+- Android SDK with `platform-tools`, `emulator` and a `google_apis` x86_64 system image
+- Hardware virtualization enabled (WHPX on Windows, KVM on Linux)
 
-- **Node.js** ≥ 18
-- **Python** ≥ 3.11
-- **Java** ≥ 11 (for JADX/APKTool)
-- **Docker** (optional, for full infra)
-
-### Frontend Setup
-
+### 1. Create the analysis emulator (one time)
 ```bash
-cd frontend
-npm install
-npm run dev
+sdkmanager "system-images;android-35;google_apis;x86_64"
+avdmanager create avd -n ApexX_Sandbox -k "system-images;android-35;google_apis;x86_64" -d medium_phone
 ```
+The backend boots this AVD automatically when an analysis needs it.
 
-The frontend runs at `http://localhost:3000`. It works standalone with embedded real data — no backend needed for viewing pre-tested cases.
-
-### Backend Setup
-
+### 2. Backend
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate      # Linux/Mac
-# venv\Scripts\activate       # Windows
-
+venv\Scripts\activate            # Windows  (source venv/bin/activate on Linux/macOS)
 pip install -r requirements.txt
-
-# Create .env with your DATABASE_URL and SECRET_KEY
-uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+freshquark                       # downloads Quark-Engine rules
+uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-### Full Infrastructure (Docker)
+### 3. Frontend
+```bash
+cd frontend
+npm install
+echo NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1 > .env.local
+npm run dev
+```
+
+Open http://localhost:3000. On Windows, `start_apex.bat` starts both services.
+
+---
+
+## Docker Deployment
+
+See [docs/DOCKER.md](docs/DOCKER.md) for the full guide. In short:
 
 ```bash
-docker-compose up -d
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-This starts PostgreSQL, Redis, Neo4j, ChromaDB, and an Android emulator.
+Android emulators cannot run inside Docker on Windows, so the containerised backend reaches the emulator through the host's adb server (`ADB_SERVER_SOCKET=tcp:host.docker.internal:5037`). Start the emulator on the host (`launch_emulator.bat`) before running dynamic analysis. Static analysis, intelligence, scoring and reporting run entirely inside the containers.
 
-### Running the Analysis CLI
+---
+
+## Configuration
+
+Settings are read from a `.env` file in the repository root (never commit it).
+
+| Variable | Purpose |
+|---|---|
+| `SECRET_KEY` | JWT signing key — **set a strong value in production** |
+| `DATABASE_URL` | Database URL (defaults to SQLite in `backend/`) |
+| `VIRUSTOTAL_API_KEY` | Threat-intelligence enrichment and malware-family attribution |
+| `IPINFO_API_TOKEN` | IP geolocation / ASN enrichment |
+| `SARVAM_API_KEY` | Report translation (Hindi, Kannada, Tamil, Telugu) |
+| `APEX_CORS_ORIGINS` | Comma-separated allowed frontend origins |
+| `APEX_DATA_DIR` | Root for case files, reports and indexes |
+| `APEX_AUTO_DYNAMIC` | Run dynamic analysis automatically after upload (`1`) |
+| `APEX_DYNAMIC_DURATION` | Seconds to exercise each app (default `90`) |
+| `APEX_AVD_NAME` | Force a specific emulator AVD |
+| `APEX_EMULATOR_HEADLESS` | Run the emulator without a window (`1`) |
+| `APEX_ENABLE_FRIDA` | Enable Frida API monitoring (`1`) |
+
+More dynamic-analysis options are documented in [docs/DYNAMIC_ANALYSIS.md](docs/DYNAMIC_ANALYSIS.md).
+
+---
+
+## API Overview
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/v1/auth/signup`, `/api/v1/auth/login` | Account creation and JWT login |
+| `POST` | `/api/v1/cases/upload/` | Upload an APK or split-APK bundle |
+| `GET` | `/api/v1/cases/` | List cases with threat scores |
+| `GET` | `/api/v1/cases/{id}/results` | All phase results for a case |
+| `POST` | `/api/v1/cases/{id}/dynamic/run` | Re-run dynamic analysis |
+| `GET` | `/api/v1/cases/{id}/dynamic/status` | Live dynamic-analysis stage |
+| `GET` | `/api/v1/cases/dynamic/emulator` | Emulator status |
+| `GET` | `/api/v1/reports/{id}/download?language=` | PDF report |
+| `GET` | `/api/v1/reports/{id}/evidence-package` | Evidence package (ZIP) |
+
+Interactive documentation: http://localhost:8080/docs
+
+---
+
+## Testing
 
 ```bash
 cd backend
-python run_engines.py path/to/sample.apk --output-dir test_results
+venv\Scripts\python -m pytest tests -q
 ```
-
-Options:
-- `--static-only` — Run only static analysis
-- `--dynamic-only` — Run only dynamic analysis
+44 unit tests cover the dynamic parsers, child-app attribution, C2 enrichment and correlation, vulnerability scoring, split-APK bundles and APK repair. The frontend is type-checked with `npx tsc --noEmit` and builds with `npm run build`.
 
 ---
 
-## Analysis Engines
+## Limitations
 
-### Static Analysis Pipeline
-
-The static engine runs 6 analysis steps sequentially:
-
-1. **APKTool** → Decompiles to Smali + resources
-2. **JADX** → Reconstructs Java source code
-3. **Androguard** → Extracts permissions, APIs, certificates
-4. **Manifest Parser** → Parses AndroidManifest.xml for misconfigurations
-5. **YARA Scanner** → Matches against malware signature rules
-6. **IOC Extractor** → Pulls URLs, domains, IPs, emails, API keys
-
-All outputs feed into the **Risk Scorer**, which uses a weighted formula:
-
-```
-Risk Score = Σ(category_weight × category_score)
-
-Categories:
-  - Permissions (0.25)  — Dangerous permission count & type
-  - IOCs (0.20)         — Hardcoded URLs, IPs, domains
-  - YARA (0.20)         — Malware signature matches
-  - API Calls (0.15)    — Suspicious API usage patterns
-  - Manifest (0.20)     — Security misconfigurations
-```
-
-### Dynamic Analysis Pipeline
-
-The dynamic engine orchestrates:
-
-1. **VM Orchestrator** → Boots Android emulator via ADB
-2. **Frida Manager** → Injects JavaScript hooks for API monitoring
-3. **Traffic Capture** → Intercepts HTTP/HTTPS via mitmproxy
-4. **PCAP Analyzer** → Parses captured traffic for C2 indicators
-5. **Behavior Aggregator** → Correlates all runtime data
-
-### Vulnerability Engine
-
-Maps findings to **OWASP Mobile Top 10 (2024)**, calculates **CVSS v3.1** scores, assigns **CWE** identifiers, and generates proof-of-concept narratives.
+- Apps that detect emulators may suppress behaviour during dynamic analysis; APKiD flags such apps so analysts know results may be incomplete.
+- Automated exploration cannot complete real logins or OTP flows.
+- Network evidence covers endpoints, DNS names and traffic volume; message content of encrypted traffic is not captured.
+- Malware-family names depend on VirusTotal knowing the sample.
+- AI narratives and the Co-Pilot chat need a local Ollama model; without it, template narratives are used.
 
 ---
 
-## Pre-Tested Results
+## Responsible Use
 
-The platform ships with analysis results from three intentionally vulnerable apps:
-
-| APK | Package | Risk Score | Verdict | Permissions | IOCs | Vulns |
-|-----|---------|-----------|---------|-------------|------|-------|
-| **DIVA** | `jakhar.aseem.diva` | 26/100 | ⚠️ Moderate Risk | 2 dangerous | 52 | 5 |
-| **InsecureShop** | `com.insecureshop` | 43/100 | 🔴 Suspicious | 3 dangerous | 130 | 10 |
-| **AndroGoat** | `owasp.sat.agoat` | 51/100 | 🔴 Suspicious | 3 dangerous | 185 | 7 |
-
-### Key Findings Across All Apps
-
-- ✅ **Debuggable flag** detected in all 3 apps
-- ✅ **Exported components** without permission protection
-- ✅ **Hardcoded API keys** found in AndroGoat (AWS key)
-- ✅ **Custom URL scheme hijacking** risks in InsecureShop and AndroGoat
-- ✅ **Backup enabled** allowing data extraction via `adb backup`
+APEX-X is intended for authorised forensic analysis of suspicious applications by investigators and security researchers. Analyse samples only in the isolated emulator sandbox, handle case data according to applicable evidence and privacy rules, and keep API keys out of version control. Bundled test apps (DIVA, InsecureShop, AndroGoat) are open-source, intentionally vulnerable training applications.
 
 ---
 
-## API Reference
+## Acknowledgements
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/v1/auth/login` | User authentication |
-| `POST` | `/api/v1/auth/signup` | User registration |
-| `GET` | `/api/v1/cases/` | List all cases |
-| `GET` | `/api/v1/cases/{id}` | Get case details |
-| `POST` | `/api/v1/cases/upload/` | Upload APK for analysis |
-| `POST` | `/api/v1/analysis/{id}/static` | Trigger static analysis |
-| `POST` | `/api/v1/analysis/{id}/dynamic` | Trigger dynamic analysis |
-| `POST` | `/api/v1/analysis/{id}/full` | Trigger full analysis |
-| `GET` | `/api/v1/analysis/{id}/status` | Get analysis status |
-| `GET` | `/api/v1/cases/{id}/results` | Get analysis results |
-| `GET` | `/api/v1/reports/{id}/download` | Download PDF report |
-| `GET` | `/health` | Health check |
-
----
-
-## Team
-
-| Role | Responsibility |
-|------|---------------|
-| **TM1** | Frontend, Backend API, Database, Authentication |
-| **TM2** | Static Analysis Engine, Dynamic Sandbox, Vulnerability Scanner |
-| **TM3** | Report Generation, Graph Explorer, Co-Pilot Integration |
-
----
-
-## Disclaimer
-
-> ⚠️ **Educational Purposes Only**
->
-> This project was developed for CMP311 coursework. All analysis is performed on intentionally vulnerable applications designed for security education. The tools and techniques demonstrated are for learning purposes only. Attempting any form of penetration testing without explicit written permission is illegal and punishable by law.
->
-> The vulnerable APKs used for testing (DIVA, InsecureShop, AndroGoat) are open-source educational resources created by their respective authors for security training.
-
----
+Built on open-source tools including APKTool, JADX, Androguard, YARA, APKiD, Quark-Engine, Frida, Scapy, FastAPI and Next.js.
 
 <div align="center">
 
-**Built with 🛡️ for CMP311 — Professional Project Planning and Prototyping**
+Developed by Atul Mishra as a research internship project in support of cybercrime investigation, Bengaluru.
 
 </div>

@@ -4,19 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Send, Cpu, Loader2, Zap, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import CopilotSidebar from "./CopilotSidebar";
-import {
-  REAL_COPILOT_SUGGESTIONS,
-  REAL_CASES,
-  REAL_PERMISSIONS,
-  REAL_IOCS,
-  REAL_VULNERABILITIES,
-  REAL_GRAPH_NODES,
-  REAL_GRAPH_EDGES,
-  REAL_PHASE_STATUS,
-  REAL_ACTIVITY,
-} from "@/services/realData";
 import { getCases, CaseResponse } from "@/services/api";
-import { buildCaseContext } from "./utils";
 
 interface Message {
   id: string;
@@ -76,14 +64,13 @@ export default function CoPilotPage() {
           content: m.content,
         }));
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "https://apex-x.onrender.com/api/v1";
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
       const res = await fetch(`${apiUrl}/copilot`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: userMessage,
           case_id: selectedCase,
-          context: buildCaseContext(selectedCase),
           history,
         }),
       });
@@ -123,8 +110,6 @@ export default function CoPilotPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
-
-  const currentCase = REAL_CASES.find((c) => c.id === selectedCase);
 
   return (
     <main className="flex-1 flex flex-col md:flex-row max-w-7xl mx-auto w-full p-4 md:p-6 gap-4 md:gap-6 h-[calc(100vh-70px)]">

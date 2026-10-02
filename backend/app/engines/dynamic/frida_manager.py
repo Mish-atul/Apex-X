@@ -5,14 +5,11 @@ for SSL interception, network monitoring, and UPI/payment capture.
 """
 
 import os
-import re
 import time
-import json
 import logging
-import platform
 import threading
 import subprocess
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -45,6 +42,7 @@ class FridaManager:
         self._message_lock = threading.Lock()
         self._frida_available = False
         self._device_obj = None
+        self.attach_mode = None  # "spawn" | "attach"
 
         # Check if frida Python module is available
         try:
@@ -61,42 +59,32 @@ class FridaManager:
     # SETUP — Ensure frida-server is running on the device
     # ═══════════════════════════════════════════════════════════
 
+    def _su(self, command: str) -> Dict[str, Any]:
+        """Run a root shell command. Emulators booted with `adb root` already run the
+        shell as uid 0; physical/Magisk devices need `su 0 -c`. Try both."""
+        direct = vm_orchestrator._run_adb(["shell", command], device=self.device, timeout=15)
+        if direct["success"] and "permission denied" not in (direct["stdout"] + direct["stderr"]).lower():
+            return direct
+        return vm_orchestrator._run_adb(["shell", "su", "0", "-c", command], device=self.device, timeout=15)
+
     def check_root(self) -> bool:
-        """Check if the device has root access."""
-        result = vm_orchestrator._run_adb(
-            ["shell", "su", "-c", "id"],
-            device=self.device, timeout=5
-        )
-        if result["success"] and "uid=0" in result["stdout"]:
-            logger.info("[Frida] Root access confirmed on device")
+        """Check if the device has root access (adb root or su)."""
+        if "uid=0" in vm_orchestrator._run_adb(["shell", "id"], device=self.device, timeout=5)["stdout"]:
+            logger.info("[Frida] Root confirmed (adb root)")
             return True
-
-        # Try without su (some devices have root by default)
-        result2 = vm_orchestrator._run_adb(
-            ["shell", "whoami"],
-            device=self.device, timeout=5
-        )
-        if result2["success"] and "root" in result2["stdout"]:
+        if "uid=0" in self._su("id")["stdout"]:
+            logger.info("[Frida] Root confirmed (su)")
             return True
-
         logger.warning("[Frida] No root access on device — Frida requires root")
         return False
 
     def is_frida_server_running(self) -> bool:
         """Check if frida-server is already running on the device."""
-        result = vm_orchestrator._run_adb(
-            ["shell", "su", "-c", "ps -A | grep frida-server"],
-            device=self.device, timeout=5
-        )
-        if result["success"] and "frida-server" in result["stdout"]:
+        pid = self._su("pidof frida-server")["stdout"].strip()
+        if pid:
             return True
-
-        # Fallback without su
-        result2 = vm_orchestrator._run_adb(
-            ["shell", "ps -A | grep frida-server"],
-            device=self.device, timeout=5
-        )
-        return result2["success"] and "frida-server" in result2["stdout"]
+        ps = self._su("ps -A")["stdout"]
+        return "frida-server" in ps
 
     def setup_frida_server(self) -> bool:
         """
@@ -116,15 +104,13 @@ class FridaManager:
             return True
 
         # Check if binary exists on device
-        check = vm_orchestrator._run_adb(
-            ["shell", "su", "-c", f"ls -la {FRIDA_SERVER_PATH}"],
-            device=self.device, timeout=5
-        )
+        check = self._su(f"ls -la {FRIDA_SERVER_PATH}")
         
         if not check["success"] or "No such file" in check.get("stderr", ""):
-            # Need to download and push frida-server
-            if not self._download_and_push_frida_server():
-                return False
+            # Prefer the binary bundled in tools/frida; only hit the network if absent
+            if not self._push_frida_server_fallback():
+                if not self._download_and_push_frida_server():
+                    return False
 
         # Start frida-server
         return self._start_frida_server()
@@ -190,59 +176,74 @@ class FridaManager:
             return False
 
         # Set permissions
-        vm_orchestrator._run_adb(
-            ["shell", "su", "-c", f"chmod 755 {FRIDA_SERVER_PATH}"],
-            device=self.device, timeout=5
-        )
+        self._su(f"chmod 755 {FRIDA_SERVER_PATH}")
 
         logger.info("[Frida] frida-server pushed and ready")
         return True
 
     def _push_frida_server_fallback(self) -> bool:
-        """Fallback: check if frida-server is bundled in our tools directory."""
-        tools_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-            "tools"
-        )
-        # Check for any frida-server binary in tools/
-        for f in os.listdir(tools_dir) if os.path.isdir(tools_dir) else []:
-            if f.startswith("frida-server"):
-                local_path = os.path.join(tools_dir, f)
-                push_result = vm_orchestrator._run_adb(
-                    ["push", local_path, FRIDA_SERVER_PATH],
-                    device=self.device, timeout=30
-                )
-                if push_result["success"]:
-                    vm_orchestrator._run_adb(
-                        ["shell", "su", "-c", f"chmod 755 {FRIDA_SERVER_PATH}"],
-                        device=self.device, timeout=5
-                    )
-                    return True
+        """Push a frida-server binary bundled in tools/frida or tools/ that matches this arch + version."""
+        try:
+            import frida
+            version = frida.__version__
+        except ImportError:
+            version = ""
+        arch = self._get_device_arch()
+        backend_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        repo_root = os.path.dirname(backend_root)
+        search_dirs = [os.path.join(repo_root, "tools", "frida"), os.path.join(repo_root, "tools"),
+                       os.path.join(backend_root, "tools", "frida")]
+
+        candidates = []
+        for d in search_dirs:
+            if not os.path.isdir(d):
+                continue
+            for f in os.listdir(d):
+                if f.startswith("frida-server") and arch in f:
+                    candidates.append(os.path.join(d, f))
+        # Prefer an exact version match so the Python client and server agree
+        candidates.sort(key=lambda p: (version and version in os.path.basename(p)), reverse=True)
+
+        for local_path in candidates:
+            logger.info(f"[Frida] Pushing bundled frida-server: {local_path}")
+            push_result = vm_orchestrator._run_adb(
+                ["push", local_path, FRIDA_SERVER_PATH], device=self.device, timeout=120
+            )
+            if push_result["success"]:
+                self._su(f"chmod 755 {FRIDA_SERVER_PATH}")
+                return True
+        logger.warning("[Frida] No bundled frida-server found for arch=%s version=%s", arch, version)
         return False
 
     def _start_frida_server(self) -> bool:
         """Start frida-server on the device in background."""
         # Kill any existing instance
-        vm_orchestrator._run_adb(
-            ["shell", "su", "-c", "pkill -f frida-server"],
-            device=self.device, timeout=5
-        )
+        self._su("pkill -f frida-server")
         time.sleep(1)
 
-        # Start in background
-        vm_orchestrator._run_adb(
-            ["shell", "su", "-c", f"{FRIDA_SERVER_PATH} -D &"],
-            device=self.device, timeout=3
-        )
-        time.sleep(2)
-
-        # Verify
-        if self.is_frida_server_running():
-            logger.info("[Frida] frida-server started successfully")
-            return True
-        else:
-            logger.error("[Frida] frida-server failed to start")
-            return False
+        # Start detached via setsid so it survives the adb command returning.
+        # Emulators rooted through `adb root` run the shell as uid 0 already, so try
+        # a plain shell first and fall back to `su -c` for devices that need it.
+        adb = vm_orchestrator._find_adb()
+        # chmod in the same shell as exec: a fresh `adb push` lands as 0666 and SELinux
+        # refuses to execute it until the +x bit is set in this invocation.
+        start_cmd = (f"chmod 755 {FRIDA_SERVER_PATH}; "
+                     f"setsid {FRIDA_SERVER_PATH} -D </dev/null >/dev/null 2>&1 &")
+        for wrapper in ([], ["su", "0", "-c"]):
+            cmd = [adb, "-s", self.device, "shell"] + wrapper + [start_cmd]
+            try:
+                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 stdin=subprocess.DEVNULL)
+            except Exception as e:
+                logger.error(f"[Frida] Failed to launch frida-server: {e}")
+                continue
+            for _ in range(6):
+                time.sleep(1)
+                if self.is_frida_server_running():
+                    logger.info("[Frida] frida-server started successfully")
+                    return True
+        logger.error("[Frida] frida-server failed to start")
+        return False
 
     # ═══════════════════════════════════════════════════════════
     # ATTACH — Connect to target app and inject hooks
@@ -278,6 +279,77 @@ class FridaManager:
         except Exception as e:
             logger.error(f"[Frida] Attach failed: {e}")
             return False
+
+    def spawn_and_inject(self, script_names: List[str] = None) -> bool:
+        """
+        Spawn the app paused, inject hooks, then resume — so instrumentation
+        (SSL unpinning, API monitors) is active before any app code executes.
+        Returns True if hooks were injected into a live session.
+        """
+        if not self._frida_available:
+            return False
+        import frida
+        try:
+            try:
+                self._device_obj = frida.get_device(self.device, timeout=10)
+            except Exception:
+                self._device_obj = frida.get_usb_device(timeout=10)
+        except Exception as e:
+            logger.error(f"[Frida] Device unavailable: {e}")
+            return False
+        logger.info(f"[Frida] Using device: {self._device_obj.name}")
+
+        # Spawn can time out while a freshly booted device is still warming up.
+        # Retry with a force-stop in between, backing off each time.
+        last_err = None
+        for attempt in range(1, 4):
+            try:
+                vm_orchestrator._run_adb(["shell", "am", "force-stop", self.package], device=self.device)
+                pid = self._device_obj.spawn([self.package])
+                self.session = self._device_obj.attach(pid)
+                self.session.on("detached", self._on_detached)
+                results = self.inject_hooks(script_names)
+                self._device_obj.resume(pid)
+                self.attach_mode = "spawn"
+                logger.info(f"[Frida] Spawned {self.package} (pid {pid}, attempt {attempt}); hooks: {results}")
+                return any(results.values()) if isinstance(results, dict) else False
+            except Exception as e:
+                last_err = e
+                logger.warning(f"[Frida] Spawn attempt {attempt} failed: {e}")
+                self._cleanup_session()
+                time.sleep(3 * attempt)
+
+        # Fallback: launch normally, then attach to the running process
+        try:
+            vm_orchestrator.launch_app(self.package, device=self.device)
+            for _ in range(10):
+                time.sleep(1)
+                pid = vm_orchestrator._run_adb(["shell", "pidof", self.package], device=self.device)["stdout"].split()
+                if pid:
+                    self.session = self._device_obj.attach(int(pid[0]))
+                    self.session.on("detached", self._on_detached)
+                    results = self.inject_hooks(script_names)
+                    self.attach_mode = "attach"
+                    logger.info(f"[Frida] Attached to running {self.package} (pid {pid[0]}); hooks: {results}")
+                    return any(results.values()) if isinstance(results, dict) else False
+        except Exception as e:
+            last_err = e
+        logger.error(f"[Frida] Instrumentation failed after retries: {last_err}")
+        return False
+
+    def _cleanup_session(self):
+        for s in self.scripts:
+            try:
+                s.unload()
+            except Exception:
+                pass
+        self.scripts.clear()
+        if self.session:
+            try:
+                self.session.detach()
+            except Exception:
+                pass
+            self.session = None
 
     def _on_detached(self, reason, crash):
         """Handle Frida session detach."""
@@ -547,6 +619,18 @@ class FridaManager:
                     "source": "frida_intercept",
                 })
 
+            elif msg_type == "apex_event":
+                events.append({
+                    "id": str(uuid4()),
+                    "timestamp": timestamp,
+                    "api_call": msg.get("api", "API call"),
+                    "description": msg.get("detail", ""),
+                    "category": msg.get("category", "general"),
+                    "risk_level": msg.get("risk", "MEDIUM"),
+                    "class_name": self.package,
+                    "source": "frida_runtime",
+                })
+
             elif msg_type == "webview":
                 events.append({
                     "id": str(uuid4()),
@@ -585,8 +669,5 @@ class FridaManager:
 
     def stop_frida_server(self):
         """Stop frida-server on the device."""
-        vm_orchestrator._run_adb(
-            ["shell", "su", "-c", "pkill -f frida-server"],
-            device=self.device, timeout=5
-        )
+        self._su("pkill -f frida-server")
         logger.info("[Frida] frida-server stopped")

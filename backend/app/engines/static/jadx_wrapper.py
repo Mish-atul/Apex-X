@@ -4,6 +4,7 @@ Extracts Java source code from APK files using the JADX decompiler
 via subprocess.
 """
 
+from app.utils.file_utils import long_path
 import os
 import subprocess
 import shutil
@@ -124,7 +125,7 @@ def extract_java_source(
 
 def _has_java_files(directory: str) -> bool:
     """Check if a directory tree contains any .java files."""
-    for root, _dirs, files in os.walk(directory):
+    for root, _dirs, files in os.walk(long_path(directory)):
         for f in files:
             if f.endswith(".java"):
                 return True
@@ -148,7 +149,7 @@ def get_java_source_stats(output_dir: str) -> Dict[str, Any]:
     sources_dir = os.path.join(output_dir, "sources")
     scan_dir = sources_dir if os.path.isdir(sources_dir) else output_dir
 
-    for root, _dirs, files in os.walk(scan_dir):
+    for root, _dirs, files in os.walk(long_path(scan_dir)):
         for f in files:
             if f.endswith(".java"):
                 stats["java_files"] += 1
@@ -188,7 +189,7 @@ def search_java_source(output_dir: str, patterns: List[str]) -> List[Dict[str, A
     sources_dir = os.path.join(output_dir, "sources")
     scan_dir = sources_dir if os.path.isdir(sources_dir) else output_dir
 
-    for root, _dirs, files in os.walk(scan_dir):
+    for root, _dirs, files in os.walk(long_path(scan_dir)):
         for f in files:
             if not f.endswith(".java"):
                 continue
@@ -199,7 +200,7 @@ def search_java_source(output_dir: str, patterns: List[str]) -> List[Dict[str, A
                         for pattern in patterns:
                             if pattern.lower() in line.lower():
                                 matches.append({
-                                    "file": os.path.relpath(file_path, scan_dir),
+                                    "file": os.path.relpath(file_path, long_path(scan_dir)),
                                     "line_number": line_num,
                                     "line_content": line.strip()[:200],
                                     "matched_pattern": pattern,

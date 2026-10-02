@@ -21,7 +21,7 @@ export default function CaseTabs({
   caseReports,
   analysisResults,
 }: CaseTabsProps) {
-  const isMockCase = ["4c0ce95d-5ae2-4d8c-9dbf-981a8b8d4396", "94f9222d-4e42-4292-8800-4f80fa4e037c", "d311d0cf-a8b3-4f83-8405-6bb7318d3b40"].includes(caseData?.id);
+  const isMockCase = false;
 
   return (
     <div className="flex-1 min-h-0">

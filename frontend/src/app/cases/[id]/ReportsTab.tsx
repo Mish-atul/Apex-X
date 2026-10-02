@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { FileText, Download, Loader2 } from "lucide-react";
 import IOCTable from "@/components/IOCTable";
-import { REAL_IOCS } from "@/services/realData";
 import { downloadReport, downloadEvidencePackage } from "@/services/api";
 
 export default function ReportsTab({ caseData, caseReports, analysisResults }: { caseData: any; caseReports: any[]; analysisResults?: any }) {
@@ -26,8 +25,6 @@ export default function ReportsTab({ caseData, caseReports, analysisResults }: {
       allIocs.push({ id: `ioc-${iocId++}`, type: "domain", val: dom, desc: "Connected domain", risk: "medium" });
     });
     iocsToUse = allIocs;
-  } else {
-    iocsToUse = REAL_IOCS.filter((i: any) => i.case_id === caseData?.id);
   }
 
   const handleDownload = async (lang: string) => {
@@ -55,7 +52,7 @@ export default function ReportsTab({ caseData, caseReports, analysisResults }: {
                   <div>
                     <span className="text-sm font-medium block">{lang}</span>
                     <span className="text-xs font-mono text-primary/50">
-                      {report ? `${(report.size_kb / 1024).toFixed(1)} MB` : "Not generated"}
+                      {report ? "PDF • generated on download" : "Not generated"}
                     </span>
                   </div>
                 </div>
