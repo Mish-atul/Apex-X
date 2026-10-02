@@ -46,6 +46,12 @@ def compute_threat_score(phase_results: Iterable[Any]) -> int:
             family = attribution.get("malware_family") or attribution.get("family")
             if _is_malware_family(family):
                 floor = max(floor, 85)
+        if phase == "static":
+            emb = ((result.get("steps") or {}).get("embedded_payloads") or {}).get("data") or {}
+            if emb.get("embedded_apks"):
+                floor = max(floor, 85)
+            elif emb.get("is_dropper"):
+                floor = max(floor, 75)
         if phase == "dynamic":
             if result.get("dropped_packages"):
                 floor = max(floor, 90)

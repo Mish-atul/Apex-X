@@ -306,6 +306,17 @@ def run_full_static_analysis(apk_path: str, case_dir: str) -> Dict[str, Any]:
         result["steps"]["quark"] = {"status": "error", "error": str(e)}
         result["errors"].append(f"Quark-Engine error: {e}")
 
+    # ── Step 6.8: Embedded payload / child APK detection ──
+    logger.info("Step 6.8/7: Embedded payload (child APK) scan")
+    embedded_results = {}
+    try:
+        from app.engines.static import embedded_payload_scanner
+        embedded_results = embedded_payload_scanner.scan_apk(apk_path)
+        result["steps"]["embedded_payloads"] = {"status": "success", "data": embedded_results}
+    except Exception as e:
+        result["steps"]["embedded_payloads"] = {"status": "error", "error": str(e)}
+        result["errors"].append(f"Embedded payload scan error: {e}")
+
     # ── Step 7: Risk Scoring ─────────────────────────────────
     logger.info("Step 7/7: Risk scoring")
     try:
@@ -321,6 +332,7 @@ def run_full_static_analysis(apk_path: str, case_dir: str) -> Dict[str, Any]:
             "iocs": ioc_results,
             "api_calls": ag_data.get("api_calls", {}),
             "baas_results": baas_results,
+            "embedded_payloads": embedded_results,
         }
 
         risk_breakdown = risk_scorer.compute_static_risk(scoring_input)

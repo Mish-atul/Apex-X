@@ -133,6 +133,29 @@ def compute_static_risk(analysis_results: Dict[str, Any]) -> Dict[str, Any]:
     total = sum(breakdown["category_scores"].values())
     breakdown["total_score"] = min(total, 100)
 
+    # 6. Embedded child APK / dropper evidence — a hard floor, not a weighted
+    # category: a hidden installable payload is malicious regardless of how
+    # benign the parent's own permissions look.
+    emb = analysis_results.get("embedded_payloads") or {}
+    floor = 0
+    if emb.get("embedded_apks"):
+        floor = 85
+    elif emb.get("is_dropper"):
+        floor = 75
+    elif emb.get("zip_tampering"):
+        # Malformed ZIP headers (fake encryption / bogus compression) only
+        # exist to break analysis tools — not seen in legitimate apps.
+        floor = 65
+    elif emb.get("embedded_dex") or emb.get("encrypted_blobs"):
+        floor = 50
+    if floor:
+        breakdown["details"]["embedded_payloads"] = {
+            "floor_applied": floor,
+            "summary": emb.get("summary"),
+            "embedded_apks": emb.get("embedded_apks", []),
+        }
+        breakdown["total_score"] = max(breakdown["total_score"], floor)
+
     # Risk level classification
     breakdown["risk_level"] = _classify_risk(breakdown["total_score"])
 

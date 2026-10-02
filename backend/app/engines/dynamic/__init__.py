@@ -31,6 +31,11 @@ from app.engines.dynamic import ui_explorer
 logger = logging.getLogger(__name__)
 
 DEFAULT_ANALYSIS_DURATION = 90
+# "manual": the analyst drives the app in the emulator window for MANUAL_DURATION
+# seconds (accepting permissions / "install update" prompts so droppers install
+# their child APK) while all monitoring runs. "auto": UI explorer + monkey.
+DYNAMIC_MODE = os.environ.get("APEX_DYNAMIC_MODE", "manual").lower()
+MANUAL_DURATION = int(os.environ.get("APEX_MANUAL_DURATION", "60"))
 NETWORK_POLL_INTERVAL = 2
 
 # AppOps that indicate sensitive behaviour when actually exercised at runtime
@@ -276,9 +281,14 @@ def _run_emulator_analysis(apk_path, case_dir, dynamic_dir, device, duration, lo
                                    "Delivered: " + ", ".join(stimuli), "orchestrator"))
         except Exception as e:
             log(f"Stimuli injection failed: {e}")
+        if DYNAMIC_MODE == "manual":
+            _manual_session(package_name, device, MANUAL_DURATION, dynamic_dir, events, log)
+            duration = 0  # skip the automated driver below
         deadline = time.time() + duration
         # UI-aware exploration first (fills forms, taps buttons, backtracks), monkey for the rest
         try:
+            if duration <= 0:
+                raise RuntimeError("skipped (manual mode)")
             explore_secs = max(20, duration // 2)
             exploration = ui_explorer.explore(package_name, device=device, duration=explore_secs, log=log)
             events.append(_evt("ui_exploration", "system", "UI Exploration", package_name, "LOW",
@@ -302,7 +312,8 @@ def _run_emulator_analysis(apk_path, case_dir, dynamic_dir, device, duration, lo
             if not vm_orchestrator._run_adb(["shell", "pidof", package_name], device=device)["stdout"].strip():
                 vm_orchestrator.launch_app(package_name, device=device)
             time.sleep(2)
-        log(f"Exercised app with {rounds} monkey rounds")
+        if DYNAMIC_MODE != "manual":
+            log(f"Exercised app with {rounds} monkey rounds")
         time.sleep(3)
     finally:
         stop.set()
@@ -432,6 +443,24 @@ def _run_emulator_analysis(apk_path, case_dir, dynamic_dir, device, duration, lo
         "behaviors": risk["behaviors"],
         "errors": errors,
     }
+
+
+def _manual_session(package_name: str, device: str, seconds: int, dynamic_dir: str,
+                    events: List[Dict[str, Any]], log) -> None:
+    """Hold the analysis window open while the analyst interacts with the app."""
+    log(f"Manual mode: interact with {package_name} in the emulator window for {seconds}s "
+        f"(grant permissions, accept install/update prompts)")
+    end = time.time() + seconds
+    while True:
+        left = int(end - time.time())
+        if left <= 0:
+            break
+        _write_status(dynamic_dir, "manual_interaction",
+                      f"MANUAL TESTING: use the app in the emulator now — {left}s remaining")
+        time.sleep(min(5, left))
+    events.append(_evt("manual_session", "system", "Manual Analyst Interaction", package_name, "LOW",
+                       f"Analyst drove the app manually for {seconds}s while monitoring ran", "analyst"))
+    log("Manual interaction window closed")
 
 
 def _profile_child(pkg: str, cuid: Optional[int], device: str, dynamic_dir: str,
